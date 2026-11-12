@@ -11,6 +11,7 @@ import { Haze, HabitatPads, MarsSky, ResourceMarker, RockField, SunLight, Terrai
 import { SpaceScene } from './scene/SpaceScene';
 import { FallingHeatShield, Lander, ParachutePackage, type Signal } from './scene/Vehicles';
 import { LandingDust } from './scene/LandingDust';
+import { StormDust } from './scene/StormDust';
 import { Astronauts, Building, PowerCables } from './scene/Outpost';
 import type { Translator } from './i18n';
 
@@ -31,6 +32,8 @@ export interface WorldSceneProps {
   onPadSelect: (pad: HabitatPad) => void;
   onStageComplete: (stage: LandingStage, run: number) => void;
   focus: CameraFocus | null;
+  // −1..1 lateral nudge during the touchdown steering check. Visual only.
+  steer: number;
 }
 
 export interface CameraFocus { key: string; x: number; z: number; distance: number }
@@ -49,7 +52,7 @@ interface LandingSignals {
 }
 
 // Drives the vehicles and camera through DESCENT → TOUCHDOWN → POST_LANDING → SETTLEMENT.
-function SurfaceDirector({ landing, terrain, signals, reducedMotion, overview, onStageComplete, controls, groups, focus }: {
+function SurfaceDirector({ landing, terrain, signals, reducedMotion, overview, onStageComplete, controls, groups, focus, steer }: {
   focus: CameraFocus | null;
   landing: LandingState;
   terrain: Terrain;
@@ -59,6 +62,7 @@ function SurfaceDirector({ landing, terrain, signals, reducedMotion, overview, o
   onStageComplete: (stage: LandingStage, run: number) => void;
   controls: React.RefObject<any>;
   groups: { lander: React.RefObject<THREE.Group | null>; pkg: React.RefObject<THREE.Group | null>; shield: React.RefObject<THREE.Group | null>; dustOrigin: THREE.Vector3 };
+  steer: number;
 }) {
   const time = useRef(0);
   const key = useRef('');
@@ -201,7 +205,7 @@ function SurfaceDirector({ landing, terrain, signals, reducedMotion, overview, o
       signals.compress.current = p < contact ? 0 : 0.6 + Math.sin(settle * Math.PI) * 0.5 * (1 - settle);
       if (lander) {
         lander.visible = true;
-        lander.position.set(final[0], y, final[1]);
+        lander.position.set(final[0] + Math.max(-1, Math.min(1, steer)) * 1.8, y, final[1]);
         lander.rotation.z = tilt * smoothstep(p, contact, contact + 0.1);
       }
       const altitude = y - finalY;
@@ -300,17 +304,18 @@ function SurfaceStage({ props, terrain, active }: { props: WorldSceneProps; terr
 
   return (
     <group>
-      <MarsSky storm={stormLevel} space={signals.sky} />
+      <MarsSky storm={stormLevel} space={signals.sky} flare={settlement && settlement.phase === 'CRISIS' && settlement.sol >= FLARE_SOL - 1 && settlement.sol <= FLARE_SOL ? 1 : 0} />
       <Haze density={signals.haze} storm={stormLevel} />
       <SunLight storm={stormLevel} shadows />
       <TerrainMeshes terrain={terrain} />
       <RockField terrain={terrain} />
+      <StormDust active={storm} reduced={props.reducedMotion} />
       <ResourceMarker tr={props.tr} terrain={terrain} visible={stage === 'DESCENT' || inSettlement || stage === 'POST_LANDING'} />
       <group ref={pkg}><ParachutePackage inflate={signals.inflate} /></group>
       <group ref={shield}><FallingHeatShield /></group>
       <group ref={lander} visible={false}><Lander throttle={signals.throttle} compress={signals.compress} lightsOn={stage !== 'DESCENT'} /></group>
       <LandingDust origin={dustOrigin} groundY={terrain.height(dustOrigin.x, dustOrigin.z)} strength={signals.dust} active={stage === 'DESCENT' || stage === 'TOUCHDOWN'} />
-      <SurfaceDirector landing={landing} terrain={terrain} signals={signals} reducedMotion={props.reducedMotion} overview={props.overview} onStageComplete={props.onStageComplete} controls={controls} groups={groups} focus={props.focus} />
+      <SurfaceDirector landing={landing} terrain={terrain} signals={signals} reducedMotion={props.reducedMotion} overview={props.overview} onStageComplete={props.onStageComplete} controls={controls} groups={groups} focus={props.focus} steer={props.steer} />
       {showModules && settlement && (
         <group>
           {settlement.phase === 'HABITAT' && <HabitatPads tr={props.tr} terrain={terrain} onSelect={onPadSelect} chosen={settlement.habitatPad} />}
@@ -318,6 +323,11 @@ function SurfaceStage({ props, terrain, active }: { props: WorldSceneProps; terr
           {settlement.modules.map((module) => {
             const shed = settlement.lastShed.includes(module.kind);
             const powered = module.kind === 'habitat' ? !settlement.blackout : module.kind === 'shield' || module.kind === 'battery' ? true : module.active && !shed;
+            const solars = settlement.modules.filter((item) => item.kind === 'solar');
+            const anchor: [number, number] = solars.length
+              ? [solars.reduce((sum, item) => sum + item.position[0], 0) / solars.length, solars.reduce((sum, item) => sum + item.position[1], 0) / solars.length]
+              : [20, 1.5];
+            const shelter = settlement.flareResponse === 'shelter' && settlement.sol >= FLARE_SOL - 1 && settlement.sol <= FLARE_SOL;
             return (
               <Building
                 key={module.id}
@@ -330,11 +340,12 @@ function SurfaceStage({ props, terrain, active }: { props: WorldSceneProps; terr
                   powered, storm, panelDust: settlement.panelDust,
                   charge: settlement.resources.energy / capacityOf(settlement),
                   warning: (module.kind === 'habitat' || module.kind === 'life-support') && critical,
+                  shelter, cleaning: settlement.stormResponse === 'clean-panels', anchor,
                 }}
               />
             );
           })}
-          {habitat && <Astronauts center={habitat.position} visible={!settlement.blackout && !(settlement.sol === FLARE_SOL - 1 && settlement.flareResponse === 'shelter')} />}
+          {habitat && <Astronauts center={habitat.position} visible={!settlement.blackout && !(settlement.flareResponse === 'shelter' && settlement.sol >= FLARE_SOL - 1 && settlement.sol <= FLARE_SOL)} />}
         </group>
       )}
       {(stage === 'POST_LANDING' || inSettlement) && (

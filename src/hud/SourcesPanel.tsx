@@ -3,7 +3,7 @@ import type { Evidence } from '../mission/sites';
 import { useT } from '../i18n';
 
 // Entry text: sources.<id>.title / .text. Link labels are the English titles of NASA pages.
-type EntryId = 'environment' | 'edl' | 'sites' | 'tech' | 'radiation' | 'modelled' | 'gameplay';
+type EntryId = 'environment' | 'edl' | 'sites' | 'tech' | 'radiation' | 'modelled' | 'gameplay' | 'attention';
 interface Entry { id: EntryId; tag: Evidence; links: { label: string; url: string }[] }
 
 const ENTRIES: Entry[] = [
@@ -52,6 +52,10 @@ const ENTRIES: Entry[] = [
   },
   {
     id: 'gameplay', tag: 'GAMEPLAY',
+    links: [],
+  },
+  {
+    id: 'attention', tag: 'GAMEPLAY',
     links: [],
   },
 ];

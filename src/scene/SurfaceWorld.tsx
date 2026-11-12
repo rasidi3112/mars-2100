@@ -156,6 +156,7 @@ const skyFragment = /* glsl */ `
   uniform vec3 uSun;
   uniform float uSpace;
   uniform float uStorm;
+  uniform float uFlare;
   varying vec3 vDir;
   void main() {
     vec3 dir = normalize(vDir);
@@ -168,6 +169,7 @@ const skyFragment = /* glsl */ `
     col += vec3(0.32, 0.26, 0.2) * pow(sunAmount, 6.0) * (1.0 - uStorm * 0.6);
     col += vec3(0.55, 0.62, 0.7) * pow(sunAmount, 90.0) * 0.55 * (1.0 - uStorm);
     col += vec3(1.0, 0.97, 0.9) * smoothstep(0.9993, 0.9997, sunAmount) * (1.0 - uStorm * 0.85);
+    col = mix(col, vec3(0.95, 0.78, 0.55), uFlare * 0.22 * smoothstep(-0.02, 0.45, h));
     col = mix(col, vec3(0.0), uSpace);
     gl_FragColor = vec4(col, 1.0);
     #include <colorspace_fragment>
@@ -179,21 +181,25 @@ export const SKY = {
   stormHorizon: new THREE.Color('#a8806a'), stormZenith: new THREE.Color('#7a5848'),
 };
 
-export function MarsSky({ storm, space }: { storm: number; space: Signal }) {
+export function MarsSky({ storm, space, flare }: { storm: number; space: Signal; flare: number }) {
   const material = useMemo(() => new THREE.ShaderMaterial({
     vertexShader: skyVertex, fragmentShader: skyFragment, side: THREE.BackSide, depthWrite: false, fog: false,
     uniforms: {
       uHorizon: { value: SKY.horizon.clone() }, uZenith: { value: SKY.zenith.clone() }, uGround: { value: SKY.ground.clone() },
-      uSun: { value: SUN_DIRECTION.clone() }, uSpace: { value: 0 }, uStorm: { value: 0 },
+      uSun: { value: SUN_DIRECTION.clone() }, uSpace: { value: 0 }, uStorm: { value: 0 }, uFlare: { value: 0 },
     },
   }), []);
   const stormAmount = useRef(0);
+  const flareAmount = useRef(0);
+  const flareTint = useMemo(() => new THREE.Color('#f0d2a4'), []);
   useFrame(({ camera }, delta) => {
     stormAmount.current = THREE.MathUtils.damp(stormAmount.current, storm, 0.6, delta);
+    flareAmount.current = THREE.MathUtils.damp(flareAmount.current, flare, 0.8, delta);
     material.uniforms.uStorm.value = stormAmount.current;
+    material.uniforms.uFlare.value = flareAmount.current;
     material.uniforms.uSpace.value = space.current;
-    material.uniforms.uHorizon.value.copy(SKY.horizon).lerp(SKY.stormHorizon, stormAmount.current);
-    material.uniforms.uZenith.value.copy(SKY.zenith).lerp(SKY.stormZenith, stormAmount.current);
+    material.uniforms.uHorizon.value.copy(SKY.horizon).lerp(SKY.stormHorizon, stormAmount.current).lerp(flareTint, flareAmount.current * 0.35);
+    material.uniforms.uZenith.value.copy(SKY.zenith).lerp(SKY.stormZenith, stormAmount.current).lerp(flareTint, flareAmount.current * 0.2);
     meshRef.current?.position.copy(camera.position);
   });
   const meshRef = useRef<THREE.Mesh>(null);

@@ -1,17 +1,24 @@
+import type { ContractId } from './contracts';
+import { DEFAULT_CONTRACT } from './contracts';
 import type { SiteId } from './sites';
 
 // Landing sequence state machine.
 // APPROACH → SITE_SELECT → ENTRY → DESCENT → TOUCHDOWN → POST_LANDING → SETTLEMENT
 // Every transition is listed explicitly; events that do not apply to the current
 // stage are ignored, so repeated clicks or duplicate scene callbacks cannot skip a stage.
+// Steering is a sub-step inside TOUCHDOWN, not a new stage. Skipping the cinematic
+// never chooses a trajectory and records a neutral steering result.
 
 export type LandingStage = 'APPROACH' | 'SITE_SELECT' | 'ENTRY' | 'DESCENT' | 'TOUCHDOWN' | 'POST_LANDING' | 'SETTLEMENT';
 export type Trajectory = 'divert' | 'direct';
+export type SkillGrade = 'pending' | 'clear' | 'rough' | 'hard' | 'neutral';
 
 export interface LandingState {
   stage: LandingStage;
   siteId: SiteId | null;
   trajectory: Trajectory | null;
+  contractId: ContractId;
+  skillGrade: SkillGrade;
   skipped: boolean;
   // Run in which the player skipped ahead to the trajectory decision (the decision is never skipped).
   fastForwardRun: number | null;
@@ -25,20 +32,33 @@ export type LandingEvent =
   | { type: 'SKIP' }
   | { type: 'CONFIRM_SITE'; siteId: SiteId }
   | { type: 'CHOOSE_TRAJECTORY'; trajectory: Trajectory }
+  | { type: 'CHOOSE_CONTRACT'; contractId: ContractId }
+  | { type: 'SKILL_RESULT'; grade: Exclude<SkillGrade, 'pending'> }
   | { type: 'STAGE_COMPLETE'; stage: LandingStage; run: number }
   | { type: 'BEGIN_SURFACE_OPS' }
   | { type: 'REPLAY' }
   | { type: 'RESET' };
 
 export const INITIAL_LANDING: LandingState = {
-  stage: 'APPROACH', siteId: null, trajectory: null,
+  stage: 'APPROACH', siteId: null, trajectory: null, contractId: DEFAULT_CONTRACT, skillGrade: 'pending',
   skipped: false, fastForwardRun: null, replay: false, landed: false, run: 0,
 };
 
 const CINEMATIC: LandingStage[] = ['ENTRY', 'DESCENT', 'TOUCHDOWN'];
 
+const neutralSkill = (state: LandingState): SkillGrade => (state.skillGrade === 'pending' ? 'neutral' : state.skillGrade);
+
 export function landingReducer(state: LandingState, event: LandingEvent): LandingState {
   if (event.type === 'RESET') return { ...INITIAL_LANDING, run: state.run + 1 };
+  if (event.type === 'CHOOSE_CONTRACT') {
+    if (state.stage !== 'APPROACH' && state.stage !== 'SITE_SELECT') return state;
+    return state.contractId === event.contractId ? state : { ...state, contractId: event.contractId };
+  }
+  if (event.type === 'SKILL_RESULT') {
+    if (state.skillGrade !== 'pending') return state;
+    if (state.stage !== 'TOUCHDOWN' && state.stage !== 'POST_LANDING') return state;
+    return { ...state, skillGrade: event.grade };
+  }
 
   switch (state.stage) {
     case 'APPROACH':
@@ -56,8 +76,10 @@ export function landingReducer(state: LandingState, event: LandingEvent): Landin
       if (event.type === 'SKIP') {
         // Skipping only fast-forwards the cinematic. If the landing decision has not been
         // made yet, jump to it instead of choosing a trajectory for the player.
-        if (!state.trajectory) return { ...state, stage: 'DESCENT', fastForwardRun: state.run };
-        return { ...state, stage: 'POST_LANDING', skipped: true, landed: true };
+        // A skip does not play the steering check; the result stays neutral.
+        const skillGrade = neutralSkill(state);
+        if (!state.trajectory) return { ...state, stage: 'DESCENT', fastForwardRun: state.run, skillGrade };
+        return { ...state, stage: 'POST_LANDING', skipped: true, landed: true, skillGrade };
       }
       if (event.type === 'CHOOSE_TRAJECTORY' && state.stage === 'DESCENT' && state.trajectory === null) {
         return { ...state, trajectory: event.trajectory };
@@ -74,7 +96,9 @@ export function landingReducer(state: LandingState, event: LandingEvent): Landin
 
     case 'SETTLEMENT':
       if (event.type === 'REPLAY' && state.siteId && state.trajectory) {
-        return { ...state, stage: 'ENTRY', replay: true, run: state.run + 1 };
+        // The outpost is not rebuilt on replay. Steering can be tried again; its new grade
+        // is not written back into the settlement.
+        return { ...state, stage: 'ENTRY', replay: true, run: state.run + 1, skillGrade: 'pending' };
       }
       return state;
   }

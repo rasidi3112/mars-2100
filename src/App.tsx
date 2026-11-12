@@ -1,6 +1,9 @@
 import { lazy, Suspense, useCallback, useContext, useEffect, useMemo, useReducer, useState, type CSSProperties } from 'react';
 import type { CameraFocus } from './WorldScene';
+import { bedFor, missionAudio } from './audio/missionAudio';
+import { CONTRACTS, type ContractId } from './mission/contracts';
 import { INITIAL_LANDING, isCinematic, landingReducer, type LandingStage, type Trajectory } from './mission/landingMachine';
+import { clearShareHash, readShareFromLocation, type ShareCard } from './mission/share';
 import { siteById, type SiteId } from './mission/sites';
 import {
   COSTS, DOSE_CAUTION, FLARE_SOL, LANDING_SPOTS, MODULE_INFO, flareDoseFor, shieldingOf, SETTLEMENT_LENGTH, UPGRADABLE, capacityOf, countKind, createSettlement, forecast, hasKind, settlementReducer, solarOutput,
@@ -10,6 +13,10 @@ import { hasLandingCopy, timelineIndex } from './mission/phases';
 import { LanguagePicker } from './hud/LanguagePicker';
 import { MissionTimeline } from './hud/MissionTimeline';
 import { ApproachCard, CinematicHUD, EvidenceTag, LandingConfirmed, PostLandingCard, SiteSelectPanel } from './hud/LandingHUD';
+import { ColdOpen } from './hud/ColdOpen';
+import { ShareView } from './hud/ShareView';
+import { SoundToggle } from './hud/SoundToggle';
+import { SteerPad } from './hud/SteerPad';
 import { PhasePanel } from './hud/PhasePanel';
 import { MissionReport } from './hud/MissionReport';
 import { SourcesPanel } from './hud/SourcesPanel';
@@ -104,6 +111,11 @@ function App({ seed }: { seed?: AppTestSeed } = {}) {
   const [helpOpen, setHelpOpen] = useState(seed?.ui?.help ?? false);
   const [reportOpen, setReportOpen] = useState(seed?.ui?.report ?? false);
   const [notice, setNotice] = useState('');
+  const [steer, setSteer] = useState(0);
+  const [shared, setShared] = useState<ShareCard | null>(() => readShareFromLocation());
+  const [readyKey, setReadyKey] = useState<string | null>(null);
+  const briefingKey = `${landing.run}:${reducedMotion ? 1 : 0}`;
+  const briefingReady = Boolean(seed) || landing.stage !== 'APPROACH' || readyKey === briefingKey;
 
   const site = siteById(landing.siteId ?? focusSite);
   const stage = landing.stage;
@@ -115,12 +127,38 @@ function App({ seed }: { seed?: AppTestSeed } = {}) {
     window.setTimeout(() => setNotice((current) => (current === message ? '' : current)), 2600);
   }, []);
 
+  // Cold open stays on the approach flight. Skip still leaves the stage immediately.
+  // The timer only records that this approach run has been watched; it does not reset other state.
+  useEffect(() => {
+    if (landing.stage !== 'APPROACH' || seed) return;
+    const key = `${landing.run}:${reducedMotion ? 1 : 0}`;
+    const delay = reducedMotion ? 900 : 8000;
+    const timer = window.setTimeout(() => setReadyKey(key), delay);
+    return () => window.clearTimeout(timer);
+  }, [landing.stage, landing.run, reducedMotion, seed]);
+
+  useEffect(() => {
+    const audio = missionAudio();
+    if (stage === 'ENTRY') audio.cue('plasma');
+    else if (stage === 'DESCENT') audio.cue('chute');
+    else if (stage === 'TOUCHDOWN') audio.cue('engine');
+    else if (stage === 'POST_LANDING') audio.cue('thump');
+  }, [stage, landing.run]);
+
+  // Reduced motion and any touchdown that ends before a grade is recorded stay neutral.
+  // This must resolve before the settlement is created, and it never picks a trajectory.
+  useEffect(() => {
+    if (landing.skillGrade !== 'pending') return;
+    const neutralNow = (reducedMotion && (landing.stage === 'TOUCHDOWN' || landing.stage === 'POST_LANDING')) || landing.stage === 'POST_LANDING';
+    if (neutralNow) dispatchLanding({ type: 'SKILL_RESULT', grade: 'neutral' });
+  }, [reducedMotion, landing.stage, landing.skillGrade]);
+
   // Create the settlement exactly once per landing (never on a replay).
   useEffect(() => {
-    if (landing.landed && !landing.replay && !settlement && landing.siteId && landing.trajectory) {
-      dispatch({ type: 'REPLACE', state: createSettlement(siteById(landing.siteId), landing.trajectory) });
+    if (landing.landed && !landing.replay && !settlement && landing.siteId && landing.trajectory && landing.skillGrade !== 'pending') {
+      dispatch({ type: 'REPLACE', state: createSettlement(siteById(landing.siteId), landing.trajectory, { skill: landing.skillGrade, contract: landing.contractId }) });
     }
-  }, [landing.landed, landing.replay, landing.siteId, landing.trajectory, settlement]);
+  }, [landing.landed, landing.replay, landing.siteId, landing.trajectory, landing.skillGrade, landing.contractId, settlement]);
 
   const act = useCallback((action: SettlementAction) => dispatch(action), []);
   const onStageComplete = useCallback((completed: LandingStage, run: number) => dispatchLanding({ type: 'STAGE_COMPLETE', stage: completed, run }), []);
@@ -130,11 +168,19 @@ function App({ seed }: { seed?: AppTestSeed } = {}) {
   const restart = () => {
     dispatch({ type: 'CLEAR' });
     dispatchLanding({ type: 'RESET' });
+    setFocusSite(CONTRACTS.science.suggestedSite);
+    setSteer(0);
     setReportOpen(false);
     setSelectedId(null);
     setBuildOpen(false);
   };
+  const chooseContract = (contractId: ContractId) => {
+    dispatchLanding({ type: 'CHOOSE_CONTRACT', contractId });
+    setFocusSite(CONTRACTS[contractId].suggestedSite);
+  };
+  const onSkill = useCallback((grade: 'clear' | 'rough' | 'hard') => dispatchLanding({ type: 'SKILL_RESULT', grade }), []);
   const replay = () => {
+    setSteer(0);
     setReportOpen(false);
     setSelectedId(null);
     setBuildOpen(false);
@@ -145,6 +191,12 @@ function App({ seed }: { seed?: AppTestSeed } = {}) {
   const stormPending = Boolean(settlement && settlement.phase === 'CRISIS' && settlement.sol === 2 && !settlement.stormResponse) || flarePending;
   const flareIncoming = Boolean(settlement && settlement.phase === 'CRISIS' && settlement.sol === FLARE_SOL - 1 && settlement.flareResponse);
   const storm = Boolean(settlement && settlement.phase !== 'REPORT' && settlement.stormWarned && settlement.sol >= 2 && settlement.sol < 5) && stage === 'SETTLEMENT';
+
+  useEffect(() => {
+    const audio = missionAudio();
+    audio.setReduced(reducedMotion);
+    audio.setBed(bedFor(stage, storm));
+  }, [stage, storm, reducedMotion]);
   const selectedModule = settlement?.modules.find((module) => module.id === selectedId) ?? null;
 
   useEffect(() => {
@@ -225,6 +277,7 @@ function App({ seed }: { seed?: AppTestSeed } = {}) {
             onPadSelect={onPadSelect}
             onStageComplete={onStageComplete}
             focus={focus}
+            steer={steer}
           />
         </Suspense>
       </div>
@@ -243,6 +296,7 @@ function App({ seed }: { seed?: AppTestSeed } = {}) {
           <div className="top-actions">
             {settlement && <span className={'crew-chip u ' + (warnings.some((w) => w.level === 'critical') ? 'risk' : 'secure')}><span />{warnings.some((w) => w.level === 'critical') ? tr.t('nav.crewAtRisk') : tr.t('nav.crewSecure')}</span>}
             {inSettlement && <button className="text-button u" onClick={replay} title={tr.t('nav.replayTitle')}>{tr.t('nav.replay')}</button>}
+            <SoundToggle />
             <LanguagePicker />
             <button className="reading-toggle" onClick={toggleReading} aria-label={reading === 'simple' ? tr.t('nav.reading.ariaSimple') : tr.t('nav.reading.ariaDetailed')} title={tr.t('nav.reading.title')}><span className={'u' + (reading === 'simple' ? ' is-on' : '')}>{tr.t('nav.reading.simple')}</span><span className={'u' + (reading === 'detailed' ? ' is-on' : '')}>{tr.t('nav.reading.detailed')}</span></button>
             <button className="icon-button" title={tr.t('nav.help')} aria-label={tr.t('nav.help')} onClick={() => setHelpOpen(!helpOpen)}>?</button>
@@ -254,14 +308,17 @@ function App({ seed }: { seed?: AppTestSeed } = {}) {
       <MissionTimeline current={timeline} minimal={cinematic} />
 
       {/* ---------- Landing sequence ---------- */}
-      {stage === 'APPROACH' && <ApproachCard onContinue={() => dispatchLanding({ type: 'CONTINUE' })} />}
+      {stage === 'APPROACH' && !briefingReady && <ColdOpen />}
+      {stage === 'APPROACH' && briefingReady && <ApproachCard contract={landing.contractId} onContract={chooseContract} onContinue={() => dispatchLanding({ type: 'CONTINUE' })} />}
       {(stage === 'APPROACH' || stage === 'SITE_SELECT') && (
         <div className="corner-controls">
+          <SoundToggle />
           <LanguagePicker />
-          {stage === 'APPROACH' && <button className="skip-button u" onClick={() => dispatchLanding({ type: 'SKIP' })}>{tr.t('approach.skip')} <span>⏭</span></button>}
+          {stage === 'APPROACH' && <button className="skip-button u" type="button" onClick={() => dispatchLanding({ type: 'SKIP' })}>{tr.t('approach.skip')} <span>⏭</span></button>}
         </div>
       )}
-      {stage === 'SITE_SELECT' && <SiteSelectPanel focus={focusSite} onFocus={setFocusSite} onConfirm={(id) => dispatchLanding({ type: 'CONFIRM_SITE', siteId: id })} />}
+      {stage === 'SITE_SELECT' && <SiteSelectPanel focus={focusSite} contract={landing.contractId} onContract={chooseContract} onFocus={setFocusSite} onConfirm={(id) => dispatchLanding({ type: 'CONFIRM_SITE', siteId: id })} />}
+      {stage === 'TOUCHDOWN' && landing.skillGrade === 'pending' && !reducedMotion && <SteerPad onOffset={setSteer} onResult={onSkill} />}
       {cinematic && <CinematicHUD landing={landing} onSkip={() => dispatchLanding({ type: 'SKIP' })} onChoose={chooseTrajectory} />}
       {stage === 'POST_LANDING' && (
         <>
@@ -440,6 +497,7 @@ function App({ seed }: { seed?: AppTestSeed } = {}) {
       )}
 
       {sourcesOpen && <SourcesPanel onClose={() => setSourcesOpen(false)} />}
+      {shared && <ShareView card={shared} onClose={() => { setShared(null); clearShareHash(); }} />}
 
       {!cinematic && (
         <footer className="mission-footer">

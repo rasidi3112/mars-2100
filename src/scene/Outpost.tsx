@@ -13,6 +13,9 @@ export interface ModuleVisualState {
   panelDust: number;
   charge: number;
   warning: boolean;
+  shelter: boolean;
+  cleaning: boolean;
+  anchor: [number, number];
 }
 
 function SolarModel({ powered, storm, panelDust }: { powered: boolean; storm: boolean; panelDust: number }) {
@@ -53,13 +56,13 @@ function SolarModel({ powered, storm, panelDust }: { powered: boolean; storm: bo
   );
 }
 
-function HabitatModel({ lit, level }: { lit: boolean; level: number }) {
+function HabitatModel({ lit, level, shelter }: { lit: boolean; level: number; shelter: boolean }) {
   const scale = 1.3 + Math.max(0, level - 1) * 0.08;
   const windowMaterial = useMemo(() => new THREE.MeshStandardMaterial({ color: '#263d4a', metalness: 0.5, roughness: 0.3, emissive: '#ffd9a8', emissiveIntensity: 0 }), []);
   const light = useRef<THREE.PointLight>(null);
   useFrame((_, delta) => {
-    windowMaterial.emissiveIntensity = THREE.MathUtils.damp(windowMaterial.emissiveIntensity, lit ? 0.9 : 0, 3, delta);
-    if (light.current) light.current.intensity = THREE.MathUtils.damp(light.current.intensity, lit ? 1.2 : 0, 3, delta);
+    windowMaterial.emissiveIntensity = THREE.MathUtils.damp(windowMaterial.emissiveIntensity, lit ? (shelter ? 1.45 : 0.9) : 0, 3, delta);
+    if (light.current) light.current.intensity = THREE.MathUtils.damp(light.current.intensity, lit ? (shelter ? 2.1 : 1.2) : 0, 3, delta);
   });
   return (
     <group scale={scale}>
@@ -369,13 +372,15 @@ export function Building({ module, terrain, visual, selected, onSelect, tr }: { 
     group.current.scale.setScalar(THREE.MathUtils.damp(group.current.scale.x, Math.max(0.02, eased) * pulse, 10, delta));
     if (module.kind === 'rover') {
       const working = module.active;
-      const t = clock.getElapsedTime() * 0.14;
-      const cx = working ? 23 : module.position[0];
-      const cz = working ? 1.5 : module.position[1];
-      const x = working ? cx + Math.sin(t) * 6.2 : cx;
-      const z = working ? cz + Math.cos(t) * 7.5 : cz;
-      group.current.position.x = THREE.MathUtils.damp(group.current.position.x, x, 0.8, delta);
-      group.current.position.z = THREE.MathUtils.damp(group.current.position.z, z, 0.8, delta);
+      const cleaning = working && visual.cleaning;
+      const t = clock.getElapsedTime() * (cleaning ? 0.42 : 0.14);
+      const cx = working ? (cleaning ? visual.anchor[0] : 23) : module.position[0];
+      const cz = working ? (cleaning ? visual.anchor[1] : 1.5) : module.position[1];
+      const radius = cleaning ? 3.1 : 6.2;
+      const x = working ? cx + Math.sin(t) * radius : cx;
+      const z = working ? cz + Math.cos(t) * (cleaning ? radius : 7.5) : cz;
+      group.current.position.x = THREE.MathUtils.damp(group.current.position.x, x, cleaning ? 1.4 : 0.8, delta);
+      group.current.position.z = THREE.MathUtils.damp(group.current.position.z, z, cleaning ? 1.4 : 0.8, delta);
       group.current.position.y = terrain.height(group.current.position.x, group.current.position.z);
       if (working) group.current.rotation.y = -t + Math.PI;
     }
@@ -384,7 +389,7 @@ export function Building({ module, terrain, visual, selected, onSelect, tr }: { 
   const y = terrain.height(x, z);
   const content = (() => {
     switch (module.kind) {
-      case 'habitat': return <HabitatModel lit={visual.powered} level={module.level} />;
+      case 'habitat': return <HabitatModel lit={visual.powered} level={module.level} shelter={visual.shelter} />;
       case 'solar': return <SolarModel powered={visual.powered} storm={visual.storm} panelDust={visual.panelDust} />;
       case 'life-support': return <LifeSupportModel powered={visual.powered} warning={visual.warning} />;
       case 'water': return <WaterModel powered={visual.powered} />;

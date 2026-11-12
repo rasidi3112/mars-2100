@@ -1,5 +1,6 @@
+import { CONTRACTS, type ContractId } from './contracts';
 import type { LandingSite } from './sites';
-import type { Trajectory } from './landingMachine';
+import type { SkillGrade, Trajectory } from './landingMachine';
 
 // Settlement simulation. Every number here is a GAMEPLAY ASSUMPTION unless a comment
 // says otherwise: reserves are 0–100 training scales, energy is in abstract units.
@@ -84,6 +85,10 @@ export interface SettlementState {
   flareResponse: FlareResponse | null;
   flareDose: number;
   landingDamage: number;
+  // Extra touchdown damage from the steering check. Added to landingDamage, never a replacement.
+  skillGrade: Exclude<SkillGrade, 'pending'>;
+  skillDamage: number;
+  contractId: ContractId;
   repairs: number;
 }
 
@@ -134,19 +139,46 @@ export function landingDamageFor(site: LandingSite, trajectory: Trajectory) {
   return site.hazard === 3 ? 16 : site.hazard === 2 ? 7 : 0;
 }
 
+// GAMEPLAY. Added on top of landingDamageFor. Neutral and clear apply nothing,
+// so skip, reduced motion and a steady descent do not punish the outpost.
+export const SKILL_DAMAGE: Record<Exclude<SkillGrade, 'pending'>, number> = {
+  clear: 0, neutral: 0, rough: 4, hard: 8,
+};
+export const SKILL_CARGO: Record<Exclude<SkillGrade, 'pending'>, number> = {
+  clear: 0, neutral: 0, rough: 1, hard: 2,
+};
+
 export const resourceDistanceFactor = (trajectory: Trajectory) => (trajectory === 'direct' ? 1.2 : 0.7);
 
-export function createSettlement(site: LandingSite, trajectory: Trajectory): SettlementState {
+const bound = (value: number) => Math.max(0, Math.min(100, value));
+
+export interface SettlementStart {
+  skill?: Exclude<SkillGrade, 'pending'>;
+  contract?: ContractId;
+}
+
+export function createSettlement(site: LandingSite, trajectory: Trajectory, start: SettlementStart = {}): SettlementState {
   const damage = landingDamageFor(site, trajectory);
+  const skill = start.skill ?? 'neutral';
+  const contract = CONTRACTS[start.contract ?? 'science'];
+  const skillDamage = SKILL_DAMAGE[skill];
   const lander = LANDING_SPOTS[trajectory];
   return {
     runId: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
-    phase: 'ASSESS', siteId: site.id, trajectory, cargo: START_CARGO,
+    phase: 'ASSESS', siteId: site.id, trajectory, cargo: Math.max(0, START_CARGO + contract.cargoDelta - SKILL_CARGO[skill]),
     modules: [makeModule('rover', [lander[0] - 5, lander[1] + 2.5], { active: false })],
-    resources: { oxygen: 90, water: 80, food: 60, energy: LANDER_BATTERY, radiation: 0, habitat: 100 - damage },
+    resources: {
+      oxygen: 90,
+      water: bound(80 + contract.waterDelta),
+      food: bound(60 + contract.foodDelta),
+      energy: LANDER_BATTERY,
+      radiation: 0,
+      habitat: bound(100 - damage - skillDamage),
+    },
     habitatPad: null, food: null, cache: false, cacheUsed: false, sol: 0, stormWarned: false,
     stormResponse: null, panelDust: 1, log: [], lastShed: [], blackout: false, ecssOutage: false,
-    outcome: null, failure: null, ecssOutSols: 0, flareResponse: null, flareDose: 0, landingDamage: damage, repairs: 0,
+    outcome: null, failure: null, ecssOutSols: 0, flareResponse: null, flareDose: 0,
+    landingDamage: damage, skillGrade: skill, skillDamage, contractId: contract.id, repairs: 0,
   };
 }
 
