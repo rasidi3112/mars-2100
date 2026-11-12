@@ -916,7 +916,8 @@ ul.phase-learn { display: grid; gap: 8px; margin: 8px 0 0; padding: 10px 0 0; li
 }
 
 /* Attention pass: cold open, contracts, steering, share card, louder storm. */
-.cold-open { pointer-events: none; position: absolute; z-index: 4; left: 28px; bottom: 16%; max-width: min(560px, calc(100% - 48px)); }
+.cold-open { pointer-events: none; position: absolute; z-index: 4; left: 28px; bottom: 16%; max-width: min(560px, calc(100% - 48px)); text-shadow: 0 1px 2px rgba(0, 0, 0, .55), 0 2px 18px rgba(0, 0, 0, .45); }
+.cold-open::before { content: ''; position: absolute; z-index: -1; inset: -48px -72px -48px -48px; background: radial-gradient(ellipse at 30% 60%, rgba(3, 3, 4, .42), rgba(3, 3, 4, .16) 48%, rgba(3, 3, 4, 0) 70%); }
 .cold-open p { margin: 0; color: rgba(248, 241, 230, .78); font: 400 .95rem/1.45 var(--sans, Inter, sans-serif); }
 .cold-open .u { color: #f0c38e; font: 500 max(.62rem, var(--min-text)) var(--mono); letter-spacing: .16em; }
 .cold-open h2 { margin: 8px 0 10px; color: #f8f1e6; font: 500 clamp(2.1rem, 5vw, 3.6rem)/1.02 var(--display); letter-spacing: -.03em; }

@@ -5,13 +5,14 @@ import * as THREE from 'three';
 import { SITES, type SiteId } from '../mission/sites';
 import { edlLive, entrySample } from '../mission/edl';
 import { STAGE_SECONDS, type LandingStage } from '../mission/landingMachine';
-import { Aeroshell, type Signal } from './Vehicles';
+import { Aeroshell } from './Vehicles';
 import { patchAround } from './sitePatches';
-import { approachDurations, approachLive } from './approachLive';
-import { EarthLaunch, alignEarth, launchLocalPose } from './EarthLaunch';
+import { SUN_DIRECTION, approachDurations, approachLive } from './approachLive';
+import { EarthLaunch, alignEarth } from './EarthLaunch';
+import { LaunchSite } from './LaunchSite';
 
 export const PLANET_RADIUS = 100;
-const SPACE_SUN = new THREE.Vector3(0.78, 0.46, 0.42).normalize();
+const SPACE_SUN = SUN_DIRECTION;
 
 // Painted stand-in, shown only until the NASA map textures below have loaded (or if they
 // cannot load). Major albedo regions sit at approximately the right latitude/longitude.
@@ -326,7 +327,7 @@ export function SpaceScene({ stage, focusSite, onFocusSite, run, reducedMotion, 
   const craft = useRef<THREE.Group>(null);
   const earthGroup = useRef<THREE.Group>(null);
   const marsFrame = useRef<THREE.Group>(null);
-  const rocket = useRef<THREE.Group>(null);
+  const stars = useRef<THREE.Group>(null);
   const time = useRef(0);
   const stageKey = useRef('');
   const done = useRef('');
@@ -336,8 +337,6 @@ export function SpaceScene({ stage, focusSite, onFocusSite, run, reducedMotion, 
   const earthAligned = useRef(false);
   const picture = useRef('');
   const fill = useRef<THREE.DirectionalLight>(null);
-  const throttleSignal = useMemo<Signal>(() => ({ current: 0 }), []);
-  const sunSignal = useMemo<Signal>(() => ({ current: 0 }), []);
 
   useLayoutEffect(() => {
     const departing = stage === 'APPROACH';
@@ -348,13 +347,7 @@ export function SpaceScene({ stage, focusSite, onFocusSite, run, reducedMotion, 
     }
     if (marsFrame.current) marsFrame.current.visible = !departing;
     if (craft.current) craft.current.visible = !departing;
-    if (!departing) return;
-    const pose = launchLocalPose(0);
-    if (rocket.current) {
-      rocket.current.visible = true;
-      rocket.current.position.copy(pose.position);
-      rocket.current.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), pose.thrust);
-    }
+    if (departing) approachLive.launchProgress = 0;
   }, [stage]);
 
   useFrame(({ camera, size }, delta) => {
@@ -375,8 +368,7 @@ export function SpaceScene({ stage, focusSite, onFocusSite, run, reducedMotion, 
         marsFrame.current.scale.setScalar(1);
       }
       if (earthGroup.current) earthGroup.current.visible = false;
-      if (rocket.current) rocket.current.visible = false;
-      sunSignal.current = 0;
+      if (stars.current) stars.current.visible = true;
       if (fill.current) fill.current.intensity = 0;
     }
 
@@ -388,7 +380,7 @@ export function SpaceScene({ stage, focusSite, onFocusSite, run, reducedMotion, 
       picture.current = segment;
       approachLive.segment = segment;
       if (fill.current) {
-        fill.current.intensity = segment === 'earth' ? 1.35 : 0;
+        fill.current.intensity = segment === 'earth' ? 0.55 : 0;
         if (segment === 'earth') fill.current.position.copy(camera.position);
       }
       if (earthGroup.current && !earthAligned.current) {
@@ -400,47 +392,15 @@ export function SpaceScene({ stage, focusSite, onFocusSite, run, reducedMotion, 
         const earth = earthGroup.current;
         const mars = marsFrame.current;
         const ship = craft.current;
+        if (stars.current) stars.current.visible = segment !== 'earth';
         if (segment === 'earth') {
-          sunSignal.current = 3.2;
-          if (earth) {
-            earth.visible = true;
-            earth.position.set(0, 0, 0);
-            earth.scale.setScalar(1);
-            earth.updateWorldMatrix(true, false);
-          }
+          // The launch from the pad is its own scene (LaunchSite); it drives the camera.
+          if (earth) earth.visible = false;
           if (mars) mars.visible = false;
           if (ship) ship.visible = false;
-          const pose = launchLocalPose(Math.min(1, local));
-          throttleSignal.current = reducedMotion ? Math.min(pose.throttle, 0.45) : pose.throttle;
-          if (rocket.current) {
-            rocket.current.visible = true;
-            rocket.current.position.copy(pose.position);
-            rocket.current.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), pose.thrust);
-          }
-          if (earth) {
-            const world = earth.localToWorld(pose.position.clone());
-            const worldUp = pose.thrust.clone().transformDirection(earth.matrixWorld);
-            const worldEast = pose.east.clone().transformDirection(earth.matrixWorld);
-            const worldNorth = pose.north.clone().transformDirection(earth.matrixWorld);
-            const cam = world.clone()
-              .addScaledVector(worldNorth, 22 + pose.wide * 16)
-              .addScaledVector(worldUp, 7 + pose.wide * 4)
-              .addScaledVector(worldEast, -8);
-            if (!reducedMotion && pose.throttle > 0.5) {
-              const shake = 0.1 * (1 - local);
-              cam.x += Math.sin(t * 43) * shake;
-              cam.y += Math.sin(t * 29) * shake;
-            }
-            if (t < 0.08) camera.position.copy(cam);
-            else camera.position.lerp(cam, 1 - Math.exp(-delta * 2.4));
-            look.copy(world).addScaledVector(worldUp, 1.5);
-            camera.lookAt(look);
-          }
+          approachLive.launchProgress = Math.min(1, local);
         } else {
           const u = ease(Math.min(1, local));
-          sunSignal.current = 1.5 * (1 - u);
-          throttleSignal.current = 0;
-          if (rocket.current) rocket.current.visible = false;
           if (earth) {
             earth.visible = true;
             earth.position.lerpVectors(new THREE.Vector3(0, 0, 0), new THREE.Vector3(-230, 28, -40), u);
@@ -475,8 +435,7 @@ export function SpaceScene({ stage, focusSite, onFocusSite, run, reducedMotion, 
         marsFrame.current.scale.setScalar(1);
       }
       if (earthGroup.current) earthGroup.current.visible = false;
-      if (rocket.current) rocket.current.visible = false;
-      sunSignal.current = 0;
+      if (stars.current) stars.current.visible = true;
       if (craft.current) {
         craft.current.visible = true;
         craft.current.scale.setScalar(0.7);
@@ -531,7 +490,9 @@ export function SpaceScene({ stage, focusSite, onFocusSite, run, reducedMotion, 
   return (
     <group>
       <color attach="background" args={['#030304']} />
-      <Stars radius={900} depth={300} count={2600} factor={14} saturation={0.05} fade speed={0.15} />
+      <group ref={stars}>
+        <Stars radius={900} depth={300} count={2600} factor={14} saturation={0.05} fade speed={0.15} />
+      </group>
       <ambientLight intensity={0.035} />
       <directionalLight position={SPACE_SUN.clone().multiplyScalar(500).toArray()} intensity={3.1} color="#fff6ea" />
       <directionalLight ref={fill} intensity={0} color="#f3f7ff" />
@@ -539,8 +500,9 @@ export function SpaceScene({ stage, focusSite, onFocusSite, run, reducedMotion, 
         <Planet stage={stage} focusSite={focusSite} onFocusSite={onFocusSite} />
       </group>
       <group ref={earthGroup}>
-        <EarthLaunch rocket={rocket} throttle={throttleSignal} sun={sunSignal} />
+        <EarthLaunch />
       </group>
+      <LaunchSite active={stage === 'APPROACH'} reducedMotion={reducedMotion} />
       <group ref={craft} position={[24, 18, 620]} scale={stage === 'ENTRY' ? 0.09 : 0.7}>
         <Aeroshell heat={heat} cruiseOffset={cruiseOffset} showCruise />
       </group>

@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
-import type { Signal } from './Vehicles';
-import { EARTH_RADIUS, LAUNCH_LAT, LAUNCH_LON } from './approachLive';
+import { NOISE_GLSL } from './glsl';
+import { EARTH_RADIUS, LAUNCH_LAT, LAUNCH_LON, SUN_DIRECTION } from './approachLive';
 
 // Same mapping as SpaceScene.latLonToVector. Duplicated so this file does not
 // import the scene that imports it.
@@ -17,15 +17,143 @@ function latLonToVector(lat: number, lon: number, radius: number) {
 // Earth colour is NASA's public-domain Blue Marble (land, ocean, ice), with the
 // same equirectangular layout as the Mars globe: 180°W at the left edge.
 // A painted stand-in shows until that image loads, or if it cannot.
+// Lighting, ocean glint, haze and clouds are drawn in shaders: a visual model, not measured data.
+// This globe is the Earth seen from space during the transit. The launch itself is in LaunchSite.
 
 const EARTH_BASE = `${import.meta.env?.BASE_URL ?? '/'}textures/earth/`;
 
-const white = new THREE.MeshStandardMaterial({ color: '#f7f4ee', roughness: 0.38, metalness: 0.22, emissive: '#6a6258', emissiveIntensity: 0.35 });
-const metal = new THREE.MeshStandardMaterial({ color: '#c5ccd4', roughness: 0.32, metalness: 0.58 });
-const soot = new THREE.MeshStandardMaterial({ color: '#2a3038', roughness: 0.62, metalness: 0.35 });
-const orange = new THREE.MeshStandardMaterial({ color: '#d4552a', roughness: 0.48, metalness: 0.18 });
-const concrete = new THREE.MeshStandardMaterial({ color: '#8e8b86', roughness: 0.92, metalness: 0.02 });
-const towerMat = new THREE.MeshStandardMaterial({ color: '#d9d3c8', roughness: 0.5, metalness: 0.38 });
+const SITE = latLonToVector(LAUNCH_LAT, LAUNCH_LON, 1).normalize();
+const ALIGN_Q = new THREE.Quaternion().setFromUnitVectors(SITE, new THREE.Vector3(0, 1, 0.08).normalize());
+
+export function alignEarth(group: THREE.Object3D) {
+  // Turn the launch coast toward the camera as the transit begins.
+  group.quaternion.copy(ALIGN_Q);
+}
+
+// ---------- Earth surface ----------
+
+const earthVertex = /* glsl */ `
+  varying vec2 vUv;
+  varying vec3 vNormalW;
+  varying vec3 vPosW;
+  varying vec3 vPosO;
+  void main() {
+    vUv = uv;
+    vPosO = position;
+    vec4 world = modelMatrix * vec4(position, 1.0);
+    vPosW = world.xyz;
+    vNormalW = normalize(mat3(modelMatrix) * normal);
+    gl_Position = projectionMatrix * viewMatrix * world;
+  }
+`;
+
+const earthFragment = /* glsl */ `
+  uniform sampler2D uMap;
+  uniform vec3 uSun;
+  uniform float uRadius;
+  uniform float uScale;
+  uniform int uOctaves;
+  varying vec2 vUv;
+  varying vec3 vNormalW;
+  varying vec3 vPosW;
+  varying vec3 vPosO;
+  ${NOISE_GLSL}
+  void main() {
+    vec3 N = normalize(vNormalW);
+    vec3 V = normalize(cameraPosition - vPosW);
+    vec3 L = normalize(uSun);
+    vec3 albedo = texture2D(uMap, vUv).rgb;
+
+    // Water is darker and bluer than land or ice in Blue Marble.
+    float blueness = albedo.b - max(albedo.r, albedo.g);
+    float ocean = smoothstep(0.008, 0.05, blueness) * (1.0 - smoothstep(0.18, 0.34, albedo.g));
+
+    // Fine detail that only shows close up, so the map does not look soft at launch height.
+    vec3 p = vPosO / uRadius;
+    float dist = length(cameraPosition - vPosW) / max(uScale, 0.0001);
+    float near = 1.0 - smoothstep(uRadius * 0.25, uRadius * 1.1, dist);
+    if (near > 0.001) {
+      float d = fbm(p * 260.0, uOctaves);
+      float d2 = vnoise(p * 1400.0);
+      float landDetail = 0.8 + 0.42 * (d * 0.75 + d2 * 0.25);
+      float waterDetail = 0.94 + 0.12 * vnoise(p * 700.0);
+      albedo *= mix(1.0, mix(landDetail, waterDetail, ocean), near);
+    }
+
+    float ndl = dot(N, L);
+    float day = smoothstep(-0.08, 0.25, ndl);
+    float diffuse = clamp(ndl * 0.92 + 0.08, 0.0, 1.0) * day;
+    vec3 sunColour = vec3(1.0, 0.95, 0.88) * 2.4;
+    // A warm band where the sun is low.
+    vec3 lowSun = mix(vec3(1.0, 0.72, 0.55), vec3(1.0), smoothstep(0.0, 0.25, ndl));
+    vec3 colour = albedo * diffuse * sunColour * lowSun;
+
+    // Sun glint on water.
+    vec3 H = normalize(L + V);
+    float nh = max(dot(N, H), 0.0);
+    float glint = (pow(nh, 90.0) * 1.6 + pow(nh, 14.0) * 0.08) * ocean * day;
+    colour += vec3(1.0, 0.93, 0.8) * glint * 2.0;
+
+    // Air: blue haze toward the limb, lit only on the day side.
+    float nv = max(dot(N, V), 0.0);
+    float limb = pow(1.0 - nv, 2.6);
+    vec3 sky = vec3(0.28, 0.52, 1.0);
+    float skyLit = smoothstep(-0.2, 0.45, ndl);
+    colour = mix(colour, sky * skyLit * 1.25 * lowSun, clamp(limb * 0.75 + 0.06 * skyLit, 0.0, 0.85));
+
+    // Faint night side so the dark hemisphere is not pure black.
+    colour += albedo * 0.012;
+
+    gl_FragColor = vec4(colour, 1.0);
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
+  }
+`;
+
+// ---------- clouds ----------
+
+const cloudFragment = /* glsl */ `
+  uniform vec3 uSun;
+  uniform vec3 uSite;
+  uniform float uTime;
+  uniform float uRadius;
+  uniform float uScale;
+  uniform int uOctaves;
+  varying vec2 vUv;
+  varying vec3 vNormalW;
+  varying vec3 vPosW;
+  varying vec3 vPosO;
+  ${NOISE_GLSL}
+  void main() {
+    vec3 p = normalize(vPosO);
+    vec3 drift = vec3(uTime * 0.006, 0.0, uTime * 0.002);
+    float warp = fbm(p * 3.0 + drift, uOctaves);
+    float n = fbm(p * 7.5 + warp * 2.2 + drift * 1.5, uOctaves + 1);
+    n = n * 0.8 + fbm(p * 22.0 + warp, 3) * 0.2;
+    // Fewer clouds over the dry subtropics, more near the equator and mid-latitudes.
+    float lat = abs(p.y);
+    float threshold = 0.5 + 0.07 * smoothstep(0.22, 0.42, lat) * (1.0 - smoothstep(0.5, 0.62, lat));
+    float dist = length(cameraPosition - vPosW) / max(uScale, 0.0001);
+    float near = 1.0 - smoothstep(uRadius * 0.25, uRadius * 1.1, dist);
+    n += (vnoise(p * 90.0) - 0.5) * 0.12 * near;
+    float cover = smoothstep(threshold, threshold + 0.16, n);
+    // Keep the sky over the pad clear so the launch is visible.
+    cover *= 1.0 - smoothstep(0.9935, 0.9995, dot(p, normalize(uSite)));
+
+    vec3 N = normalize(vNormalW);
+    vec3 L = normalize(uSun);
+    float ndl = dot(N, L);
+    float lit = smoothstep(-0.1, 0.5, ndl);
+    vec3 lowSun = mix(vec3(1.0, 0.8, 0.68), vec3(1.0), smoothstep(0.0, 0.25, ndl));
+    vec3 colour = vec3(1.0) * (0.03 + lit * 1.9) * lowSun;
+    float alpha = cover * 0.82;
+    gl_FragColor = vec4(colour, alpha);
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
+  }
+`;
+
+// ---------- atmosphere rim ----------
 
 const earthAtmosphereVertex = /* glsl */ `
   varying vec3 vNormal;
@@ -45,12 +173,17 @@ const earthAtmosphereFragment = /* glsl */ `
   varying vec3 vView;
   void main() {
     float d = clamp(-dot(vNormal, vView) / uMax, 0.0, 1.0);
-    float lit = smoothstep(-0.2, 0.55, dot(vNormal, uSun));
-    float glow = pow(d, 1.7) * lit * uStrength;
-    gl_FragColor = vec4(vec3(0.45, 0.68, 0.95) * glow, glow);
+    float ndl = dot(vNormal, normalize(uSun));
+    float lit = smoothstep(-0.25, 0.5, ndl);
+    float glow = pow(d, 1.6) * lit * uStrength;
+    // Blue on the day side, a thin warm edge at the terminator.
+    vec3 tint = mix(vec3(1.0, 0.52, 0.3), vec3(0.42, 0.66, 1.0), smoothstep(-0.05, 0.3, ndl));
+    gl_FragColor = vec4(tint * glow, glow);
     #include <colorspace_fragment>
   }
 `;
+
+// ---------- textures ----------
 
 function createEarthPaint() {
   const width = 1024;
@@ -62,7 +195,7 @@ function createEarthPaint() {
   if (!ctx) return null;
   const toX = (lon: number) => ((lon + 180) / 360) * width;
   const toY = (lat: number) => ((90 - lat) / 180) * height;
-  ctx.fillStyle = '#1c4f86';
+  ctx.fillStyle = '#0d2c55';
   ctx.fillRect(0, 0, width, height);
   const blob = (lon: number, lat: number, rx: number, ry: number, color: string) => {
     for (const offset of [-360, 0, 360]) {
@@ -83,8 +216,8 @@ function createEarthPaint() {
       ctx.restore();
     }
   };
-  const land = 'rgba(96, 122, 62, 0.92)';
-  const dry = 'rgba(176, 142, 86, 0.9)';
+  const land = 'rgba(86, 110, 58, 0.92)';
+  const dry = 'rgba(170, 138, 84, 0.9)';
   [
     [-100, 45, 28, 18], [-90, 15, 16, 14], [-62, -10, 14, 22],
     [20, 8, 18, 22], [25, -22, 12, 14], [45, 25, 14, 10],
@@ -92,7 +225,7 @@ function createEarthPaint() {
     [135, -25, 14, 10],
   ].forEach(([lon, lat, rx, ry]) => blob(lon, lat, rx, ry, land));
   [[20, 22, 16, 10], [45, 25, 12, 8], [70, 28, 14, 8]].forEach(([lon, lat, rx, ry]) => blob(lon, lat, rx, ry, dry));
-  ctx.fillStyle = 'rgba(246, 248, 250, 0.95)';
+  ctx.fillStyle = 'rgba(236, 240, 244, 0.95)';
   ctx.fillRect(0, 0, width, toY(78));
   ctx.fillRect(0, toY(-78), width, height - toY(-78));
   const texture = new THREE.CanvasTexture(canvas);
@@ -101,186 +234,66 @@ function createEarthPaint() {
   return texture;
 }
 
-function createCloudPaint() {
-  const width = 1024;
-  const height = 512;
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return null;
-  let seed = 4242;
-  const rand = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
-  for (let i = 0; i < 70; i += 1) {
-    const x = rand() * width;
-    const y = rand() * height;
-    const radius = 18 + rand() * 50;
-    const fill = ctx.createRadialGradient(x, y, 0, x, y, radius);
-    fill.addColorStop(0, `rgba(255,255,255,${0.16 + rand() * 0.2})`);
-    fill.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = fill;
-    ctx.beginPath();
-    ctx.arc(x, y, radius, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  return texture;
+function useSmallScreen() {
+  const gl = useThree((state) => state.gl);
+  return useMemo(() => gl.capabilities.maxTextureSize < 2048 || window.matchMedia('(max-width: 800px), (max-height: 500px)').matches, [gl]);
 }
 
 function useEarthMap() {
   const gl = useThree((state) => state.gl);
+  const small = useSmallScreen();
   const painted = useMemo(() => createEarthPaint(), []);
   const [map, setMap] = useState<THREE.Texture | null>(null);
   useEffect(() => () => { painted?.dispose(); }, [painted]);
   useEffect(() => {
     let cancelled = false;
-    const small = gl.capabilities.maxTextureSize < 2048 || window.matchMedia('(max-width: 800px), (max-height: 500px)').matches;
     const loader = new THREE.TextureLoader();
     loader.loadAsync(`${EARTH_BASE}earth-color-${small ? '1k' : '2k'}.jpg`)
       .then((texture) => {
         if (cancelled) { texture.dispose(); return; }
         texture.colorSpace = THREE.SRGBColorSpace;
-        texture.anisotropy = Math.min(8, gl.capabilities.getMaxAnisotropy());
+        texture.anisotropy = Math.min(16, gl.capabilities.getMaxAnisotropy());
+        texture.generateMipmaps = true;
+        texture.minFilter = THREE.LinearMipmapLinearFilter;
         setMap(texture);
       })
       .catch(() => { /* painted stand-in remains */ });
     return () => { cancelled = true; };
-  }, [gl]);
+  }, [gl, small]);
   useEffect(() => () => { map?.dispose(); }, [map]);
   return map ?? painted;
 }
 
-const SITE = latLonToVector(LAUNCH_LAT, LAUNCH_LON, 1).normalize();
-const EAST = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), SITE).normalize();
-const NORTH = new THREE.Vector3().crossVectors(SITE, EAST).normalize();
-const UP = new THREE.Vector3(0, 1, 0);
-const PAD_Q = new THREE.Quaternion().setFromUnitVectors(UP, SITE);
-const TOWER = EAST.clone().applyQuaternion(PAD_Q.clone().invert());
-TOWER.y = 0;
-if (TOWER.lengthSq() > 0) TOWER.normalize().multiplyScalar(1.9);
-
-export function alignEarth(group: THREE.Object3D) {
-  // Stand the launch coast up in the frame so the rocket rises against the horizon.
-  group.quaternion.setFromUnitVectors(SITE, new THREE.Vector3(0, 1, 0.08).normalize());
-}
-
-export function launchLocalPose(progress: number) {
-  const hold = 0.1;
-  const climb = smooth(progress, hold, 0.22);
-  const alt = Math.pow(smooth(progress, hold, 1), 1.08) * 88;
-  const pitch = smooth(progress, 0.4, 0.95) * 0.78;
-  const downrange = Math.pow(smooth(progress, 0.4, 1), 1.25) * 48;
-  const thrust = SITE.clone().multiplyScalar(Math.cos(pitch)).addScaledVector(EAST, Math.sin(pitch)).normalize();
-  const position = SITE.clone().multiplyScalar(EARTH_RADIUS + 0.55 + alt).addScaledVector(EAST, downrange);
-  const throttle = progress < hold ? 0.35 * (progress / hold) : 0.72 + 0.28 * climb;
-  return { position, thrust, throttle, wide: 1 - smooth(progress, 0.02, 0.2), east: EAST, north: NORTH };
-}
-
-function smooth(value: number, edge0: number, edge1: number) {
-  const t = Math.min(1, Math.max(0, (value - edge0) / (edge1 - edge0)));
-  return t * t * (3 - 2 * t);
-}
-
-function RocketBody() {
-  return (
-    <group>
-      <mesh position={[0, 3.7, 0]} material={white} castShadow>
-        <cylinderGeometry args={[0.78, 0.86, 6.6, 24]} />
-      </mesh>
-      <mesh position={[1.22, 2.9, 0]} material={white} castShadow>
-        <cylinderGeometry args={[0.4, 0.46, 5.1, 16]} />
-      </mesh>
-      <mesh position={[-1.22, 2.9, 0]} material={white} castShadow>
-        <cylinderGeometry args={[0.4, 0.46, 5.1, 16]} />
-      </mesh>
-      <mesh position={[1.22, 5.55, 0]} material={orange}>
-        <coneGeometry args={[0.4, 0.7, 16]} />
-      </mesh>
-      <mesh position={[-1.22, 5.55, 0]} material={orange}>
-        <coneGeometry args={[0.4, 0.7, 16]} />
-      </mesh>
-      <mesh position={[0, 7.15, 0]} material={soot}>
-        <cylinderGeometry args={[0.78, 0.78, 0.28, 24]} />
-      </mesh>
-      <mesh position={[0, 8.35, 0]} material={white} castShadow>
-        <cylinderGeometry args={[0.58, 0.76, 2.15, 24]} />
-      </mesh>
-      <mesh position={[0, 9.85, 0]} material={white} castShadow>
-        <coneGeometry args={[0.58, 1.55, 24]} />
-      </mesh>
-      <mesh position={[0, 0.35, 0]} rotation={[Math.PI, 0, 0]} material={soot}>
-        <coneGeometry args={[0.32, 0.55, 16]} />
-      </mesh>
-      <mesh position={[1.22, 0.28, 0]} rotation={[Math.PI, 0, 0]} material={metal}>
-        <coneGeometry args={[0.2, 0.38, 12]} />
-      </mesh>
-      <mesh position={[-1.22, 0.28, 0]} rotation={[Math.PI, 0, 0]} material={metal}>
-        <coneGeometry args={[0.2, 0.38, 12]} />
-      </mesh>
-    </group>
-  );
-}
-
-function Pad() {
-  const deck = SITE.clone().multiplyScalar(EARTH_RADIUS + 0.02);
-  return (
-    <group position={deck} quaternion={PAD_Q}>
-      <mesh position={[0, 0.16, 0]} material={concrete} receiveShadow>
-        <cylinderGeometry args={[2.15, 2.25, 0.18, 40]} />
-      </mesh>
-      <mesh position={[0, 0.3, 1.5]} material={soot}>
-        <boxGeometry args={[1.5, 0.08, 3.4]} />
-      </mesh>
-      <group position={TOWER}>
-        <mesh position={[0, 5.4, 0]} material={towerMat}>
-          <boxGeometry args={[0.28, 10.6, 0.28]} />
-        </mesh>
-        <mesh position={[0, 7.6, 0]} material={towerMat}>
-          <boxGeometry args={[1.6, 0.12, 0.16]} />
-        </mesh>
-      </group>
-    </group>
-  );
-}
-
-function Flames({ throttle, flame }: { throttle: Signal; flame: RefObject<THREE.Group | null> }) {
-  const light = useRef<THREE.PointLight>(null);
-  useFrame(({ clock }) => {
-    const k = throttle.current;
-    const flicker = 0.86 + Math.sin(clock.getElapsedTime() * 31) * 0.08 + Math.sin(clock.getElapsedTime() * 17) * 0.06;
-    if (flame.current) {
-      flame.current.visible = k > 0.04;
-      const stretch = (1.1 + k * 3.6) * flicker;
-      flame.current.scale.set(0.55 + k * 0.45, stretch, 0.55 + k * 0.45);
-    }
-    if (light.current) light.current.intensity = k * 7 * flicker;
-  });
-  return (
-    <group ref={flame} position={[0, -0.15, 0]}>
-      <mesh rotation={[Math.PI, 0, 0]}>
-        <coneGeometry args={[0.55, 2.4, 16]} />
-        <meshBasicMaterial color="#ffb15a" transparent opacity={0.9} blending={THREE.AdditiveBlending} depthWrite={false} />
-      </mesh>
-      <mesh position={[1.22, 0.1, 0]} rotation={[Math.PI, 0, 0]}>
-        <coneGeometry args={[0.28, 1.5, 12]} />
-        <meshBasicMaterial color="#ffd2a0" transparent opacity={0.75} blending={THREE.AdditiveBlending} depthWrite={false} />
-      </mesh>
-      <mesh position={[-1.22, 0.1, 0]} rotation={[Math.PI, 0, 0]}>
-        <coneGeometry args={[0.28, 1.5, 12]} />
-        <meshBasicMaterial color="#ffd2a0" transparent opacity={0.75} blending={THREE.AdditiveBlending} depthWrite={false} />
-      </mesh>
-      <pointLight ref={light} color="#ffb56a" intensity={0} distance={46} decay={2} />
-    </group>
-  );
-}
-
-export function EarthLaunch({ rocket, throttle, sun }: { rocket: RefObject<THREE.Group | null>; throttle: Signal; sun: Signal }) {
+export function EarthLaunch() {
   const color = useEarthMap();
-  const clouds = useMemo(() => createCloudPaint(), []);
-  const cloudSpin = useRef<THREE.Mesh>(null);
-  const sunLight = useRef<THREE.DirectionalLight>(null);
-  const flame = useRef<THREE.Group>(null);
+  const small = useSmallScreen();
+  const earthMesh = useRef<THREE.Mesh>(null);
+  const octaves = small ? 4 : 5;
+  const earthMaterial = useMemo(() => new THREE.ShaderMaterial({
+    vertexShader: earthVertex,
+    fragmentShader: earthFragment,
+    uniforms: {
+      uMap: { value: null as THREE.Texture | null },
+      uSun: { value: SUN_DIRECTION.clone() },
+      uRadius: { value: EARTH_RADIUS },
+      uScale: { value: 1 },
+      uOctaves: { value: octaves },
+    },
+  }), [octaves]);
+  const cloudMaterial = useMemo(() => new THREE.ShaderMaterial({
+    vertexShader: earthVertex,
+    fragmentShader: cloudFragment,
+    transparent: true,
+    depthWrite: false,
+    uniforms: {
+      uSun: { value: SUN_DIRECTION.clone() },
+      uSite: { value: SITE.clone() },
+      uTime: { value: 0 },
+      uRadius: { value: EARTH_RADIUS },
+      uScale: { value: 1 },
+      uOctaves: { value: octaves },
+    },
+  }), [octaves]);
   const atmosphere = useMemo(() => new THREE.ShaderMaterial({
     vertexShader: earthAtmosphereVertex,
     fragmentShader: earthAtmosphereFragment,
@@ -289,36 +302,34 @@ export function EarthLaunch({ rocket, throttle, sun }: { rocket: RefObject<THREE
     depthWrite: false,
     side: THREE.BackSide,
     uniforms: {
-      uSun: { value: new THREE.Vector3(0, 1, 0.08).normalize() },
-      uStrength: { value: 1.15 },
-      uMax: { value: Math.sqrt(1 - 1 / (1.028 * 1.028)) },
+      uSun: { value: SUN_DIRECTION.clone() },
+      uStrength: { value: 1.25 },
+      uMax: { value: Math.sqrt(1 - 1 / (1.03 * 1.03)) },
     },
   }), []);
-  useEffect(() => () => { clouds?.dispose(); atmosphere.dispose(); }, [clouds, atmosphere]);
-  useFrame((_, delta) => {
-    if (cloudSpin.current) cloudSpin.current.rotation.y += delta * 0.012;
-    if (sunLight.current) sunLight.current.intensity = sun.current;
+  useEffect(() => { earthMaterial.uniforms.uMap.value = color; }, [earthMaterial, color]);
+  useEffect(() => () => { atmosphere.dispose(); earthMaterial.dispose(); cloudMaterial.dispose(); }, [atmosphere, earthMaterial, cloudMaterial]);
+  const scaleVec = useMemo(() => new THREE.Vector3(), []);
+  useFrame(({ clock }) => {
+    cloudMaterial.uniforms.uTime.value = clock.getElapsedTime();
+    // The group is scaled down during the transit; the close-up detail should follow.
+    if (earthMesh.current) {
+      earthMesh.current.getWorldScale(scaleVec);
+      earthMaterial.uniforms.uScale.value = scaleVec.x;
+      cloudMaterial.uniforms.uScale.value = scaleVec.x;
+    }
   });
-  const sunPos = SITE.clone().multiplyScalar(EARTH_RADIUS * 8);
   return (
     <group>
-      <mesh>
-        <sphereGeometry args={[EARTH_RADIUS, 192, 128]} />
-        <meshStandardMaterial map={color ?? undefined} roughness={0.82} metalness={0.04} />
+      <mesh ref={earthMesh} material={earthMaterial}>
+        <sphereGeometry args={[EARTH_RADIUS, 256, 160]} />
       </mesh>
-      <mesh ref={cloudSpin} scale={1.012}>
+      <mesh scale={1.011} material={cloudMaterial}>
+        <sphereGeometry args={[EARTH_RADIUS, 128, 80]} />
+      </mesh>
+      <mesh scale={1.03} material={atmosphere}>
         <sphereGeometry args={[EARTH_RADIUS, 96, 64]} />
-        <meshStandardMaterial map={clouds ?? undefined} transparent opacity={0.42} depthWrite={false} roughness={1} metalness={0} />
       </mesh>
-      <mesh scale={1.028} material={atmosphere}>
-        <sphereGeometry args={[EARTH_RADIUS, 64, 48]} />
-      </mesh>
-      <directionalLight ref={sunLight} position={sunPos.toArray()} intensity={0} color="#fff6ea" />
-      <Pad />
-      <group ref={rocket}>
-        <RocketBody />
-        <Flames throttle={throttle} flame={flame} />
-      </group>
     </group>
   );
 }
