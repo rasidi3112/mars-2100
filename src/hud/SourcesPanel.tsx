@@ -3,7 +3,7 @@ import type { Evidence } from '../mission/sites';
 import { useT } from '../i18n';
 
 // Entry text: sources.<id>.title / .text. Link labels are the English titles of NASA pages.
-type EntryId = 'environment' | 'edl' | 'sites' | 'tech' | 'radiation' | 'modelled' | 'gameplay' | 'attention';
+type EntryId = 'environment' | 'edl' | 'sites' | 'tech' | 'radiation' | 'transit' | 'modelled' | 'gameplay' | 'attention';
 interface Entry { id: EntryId; tag: Evidence; links: { label: string; url: string }[] }
 
 const ENTRIES: Entry[] = [
@@ -44,6 +44,14 @@ const ENTRIES: Entry[] = [
     id: 'radiation', tag: 'OBSERVED',
     links: [
       { label: 'NASA/JPL · Solar storm doubles radiation at the Martian surface', url: 'https://www.jpl.nasa.gov/news/large-solar-storm-sparks-global-aurora-and-doubles-radiation-levels-on-the-martian-surface/' },
+    ],
+  },
+  {
+    id: 'transit', tag: 'MODELLED',
+    links: [
+      { label: 'NASA Visible Earth · Blue Marble', url: 'https://visibleearth.nasa.gov/collection/1484/blue-marble' },
+      { label: 'NASA GSFC · Earth fact sheet', url: 'https://nssdc.gsfc.nasa.gov/planetary/factsheet/earthfact.html' },
+      { label: 'NASA · Artemis', url: 'https://www.nasa.gov/humans-in-space/artemis/' },
     ],
   },
   {
