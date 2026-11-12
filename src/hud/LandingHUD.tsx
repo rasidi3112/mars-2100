@@ -32,6 +32,7 @@ export function ApproachCard({ contract, onContract, onContinue }: { contract: C
       <p className="sheet-label u">{tr.t('approach.label')}</p>
       <h2 className="sheet-objective">{tr.t('approach.objective')}</h2>
       <ContractPicker value={contract} onChange={onContract} />
+      <p className="hud-footnote">{tr.m('approach.departureNote')}</p>
       <dl className="readout-list">
         <div><dt>{tr.t('approach.vehicle')}</dt><dd>{tr.t('approach.vehicleValue')}</dd></div>
         <div><dt>{tr.t('approach.next')}</dt><dd>{tr.t('approach.nextValue')}</dd></div>

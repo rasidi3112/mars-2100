@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { Html, Stars } from '@react-three/drei';
 import * as THREE from 'three';
 import { SITES, type SiteId } from '../mission/sites';
 import { edlLive, entrySample } from '../mission/edl';
 import { STAGE_SECONDS, type LandingStage } from '../mission/landingMachine';
-import { Aeroshell } from './Vehicles';
+import { Aeroshell, type Signal } from './Vehicles';
 import { patchAround } from './sitePatches';
+import { approachDurations, approachLive } from './approachLive';
+import { EarthLaunch, alignEarth, launchLocalPose } from './EarthLaunch';
 
 export const PLANET_RADIUS = 100;
 const SPACE_SUN = new THREE.Vector3(0.78, 0.46, 0.42).normalize();
@@ -317,33 +319,177 @@ interface SpaceProps {
   onComplete: (stage: LandingStage, run: number) => void;
 }
 
-// APPROACH and SITE_SELECT: the vehicle (cruise stage + aeroshell) closes on Mars.
+// APPROACH is three pictures in one stage: Earth departure, a compressed transit, then the cruise closing on Mars.
+// SITE_SELECT frames the Mars globe. ENTRY rides behind the capsule into the upper atmosphere.
 // ENTRY: the camera rides behind the capsule as it skims into the upper atmosphere.
 export function SpaceScene({ stage, focusSite, onFocusSite, run, reducedMotion, onComplete }: SpaceProps) {
   const craft = useRef<THREE.Group>(null);
+  const earthGroup = useRef<THREE.Group>(null);
+  const marsFrame = useRef<THREE.Group>(null);
+  const rocket = useRef<THREE.Group>(null);
   const time = useRef(0);
   const stageKey = useRef('');
   const done = useRef('');
   const look = useMemo(() => new THREE.Vector3(), []);
   const heat = useRef(0);
   const cruiseOffset = useRef(0);
+  const earthAligned = useRef(false);
+  const picture = useRef('');
+  const fill = useRef<THREE.DirectionalLight>(null);
+  const throttleSignal = useMemo<Signal>(() => ({ current: 0 }), []);
+  const sunSignal = useMemo<Signal>(() => ({ current: 0 }), []);
+
+  useLayoutEffect(() => {
+    const departing = stage === 'APPROACH';
+    if (earthGroup.current) {
+      alignEarth(earthGroup.current);
+      earthAligned.current = true;
+      earthGroup.current.visible = departing;
+    }
+    if (marsFrame.current) marsFrame.current.visible = !departing;
+    if (craft.current) craft.current.visible = !departing;
+    if (!departing) return;
+    const pose = launchLocalPose(0);
+    if (rocket.current) {
+      rocket.current.visible = true;
+      rocket.current.position.copy(pose.position);
+      rocket.current.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), pose.thrust);
+    }
+  }, [stage]);
 
   useFrame(({ camera, size }, delta) => {
     const key = stage + ':' + run;
-    if (stageKey.current !== key) { stageKey.current = key; time.current = 0; }
+    if (stageKey.current !== key) {
+      stageKey.current = key;
+      time.current = 0;
+      if (stage === 'APPROACH') approachLive.segment = 'earth';
+    }
     time.current += Math.min(delta, 0.05);
     const t = time.current;
     const ease = (x: number) => x * x * (3 - 2 * x);
 
+    if (stage !== 'APPROACH') {
+      if (marsFrame.current) {
+        marsFrame.current.visible = true;
+        marsFrame.current.position.set(0, 0, 0);
+        marsFrame.current.scale.setScalar(1);
+      }
+      if (earthGroup.current) earthGroup.current.visible = false;
+      if (rocket.current) rocket.current.visible = false;
+      sunSignal.current = 0;
+      if (fill.current) fill.current.intensity = 0;
+    }
+
     if (stage === 'APPROACH') {
-      const p = ease(Math.min(1, t / STAGE_SECONDS.APPROACH));
+      const durations = approachDurations(reducedMotion);
+      const prelude = durations.earth + durations.transit;
+      const segment = t < durations.earth ? 'earth' : t < prelude ? 'transit' : 'mars';
+      const pictureChanged = picture.current !== segment;
+      picture.current = segment;
+      approachLive.segment = segment;
+      if (fill.current) {
+        fill.current.intensity = segment === 'earth' ? 1.35 : 0;
+        if (segment === 'earth') fill.current.position.copy(camera.position);
+      }
+      if (earthGroup.current && !earthAligned.current) {
+        alignEarth(earthGroup.current);
+        earthAligned.current = true;
+      }
+      if (segment === 'earth' || segment === 'transit') {
+        const local = segment === 'earth' ? t / durations.earth : (t - durations.earth) / durations.transit;
+        const earth = earthGroup.current;
+        const mars = marsFrame.current;
+        const ship = craft.current;
+        if (segment === 'earth') {
+          sunSignal.current = 3.2;
+          if (earth) {
+            earth.visible = true;
+            earth.position.set(0, 0, 0);
+            earth.scale.setScalar(1);
+            earth.updateWorldMatrix(true, false);
+          }
+          if (mars) mars.visible = false;
+          if (ship) ship.visible = false;
+          const pose = launchLocalPose(Math.min(1, local));
+          throttleSignal.current = reducedMotion ? Math.min(pose.throttle, 0.45) : pose.throttle;
+          if (rocket.current) {
+            rocket.current.visible = true;
+            rocket.current.position.copy(pose.position);
+            rocket.current.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), pose.thrust);
+          }
+          if (earth) {
+            const world = earth.localToWorld(pose.position.clone());
+            const worldUp = pose.thrust.clone().transformDirection(earth.matrixWorld);
+            const worldEast = pose.east.clone().transformDirection(earth.matrixWorld);
+            const worldNorth = pose.north.clone().transformDirection(earth.matrixWorld);
+            const cam = world.clone()
+              .addScaledVector(worldNorth, 22 + pose.wide * 16)
+              .addScaledVector(worldUp, 7 + pose.wide * 4)
+              .addScaledVector(worldEast, -8);
+            if (!reducedMotion && pose.throttle > 0.5) {
+              const shake = 0.1 * (1 - local);
+              cam.x += Math.sin(t * 43) * shake;
+              cam.y += Math.sin(t * 29) * shake;
+            }
+            if (t < 0.08) camera.position.copy(cam);
+            else camera.position.lerp(cam, 1 - Math.exp(-delta * 2.4));
+            look.copy(world).addScaledVector(worldUp, 1.5);
+            camera.lookAt(look);
+          }
+        } else {
+          const u = ease(Math.min(1, local));
+          sunSignal.current = 1.5 * (1 - u);
+          throttleSignal.current = 0;
+          if (rocket.current) rocket.current.visible = false;
+          if (earth) {
+            earth.visible = true;
+            earth.position.lerpVectors(new THREE.Vector3(0, 0, 0), new THREE.Vector3(-230, 28, -40), u);
+            earth.scale.setScalar(THREE.MathUtils.lerp(1, 0.11, u));
+          }
+          if (mars) {
+            mars.visible = true;
+            mars.position.lerpVectors(new THREE.Vector3(220, 36, -30), new THREE.Vector3(0, 0, 0), u);
+            mars.scale.setScalar(THREE.MathUtils.lerp(0.24, 1, u));
+          }
+          if (ship) {
+            ship.visible = true;
+            ship.scale.setScalar(2.4);
+            const end = new THREE.Vector3(24, 18, 620).add(mars?.position ?? new THREE.Vector3());
+            ship.position.lerpVectors(new THREE.Vector3(150, 78, 110), end, u);
+            ship.lookAt(mars?.position ?? new THREE.Vector3());
+          }
+          const camEnd = (ship?.position ?? new THREE.Vector3(24, 18, 620)).clone().add(new THREE.Vector3(-15, 5, 24));
+          const cam = new THREE.Vector3(-40, 70, 360).lerp(camEnd, u * u);
+          if (pictureChanged || local < 0.04 || u > 0.97) camera.position.copy(cam);
+          else camera.position.lerp(cam, 1 - Math.exp(-delta * 2.2));
+          const between = (earth?.position ?? new THREE.Vector3()).clone().lerp(mars?.position ?? new THREE.Vector3(220, 36, -30), 0.42);
+          const closingLook = (ship?.position ?? new THREE.Vector3()).clone().lerp(new THREE.Vector3(), 0.16);
+          look.copy(between).lerp(closingLook, u * u);
+          camera.lookAt(look);
+        }
+        return;
+      }
+      if (marsFrame.current) {
+        marsFrame.current.visible = true;
+        marsFrame.current.position.set(0, 0, 0);
+        marsFrame.current.scale.setScalar(1);
+      }
+      if (earthGroup.current) earthGroup.current.visible = false;
+      if (rocket.current) rocket.current.visible = false;
+      sunSignal.current = 0;
+      if (craft.current) {
+        craft.current.visible = true;
+        craft.current.scale.setScalar(0.7);
+      }
+      const p = ease(Math.min(1, (t - prelude) / STAGE_SECONDS.APPROACH));
       const craftPos = new THREE.Vector3().lerpVectors(new THREE.Vector3(24, 18, 620), new THREE.Vector3(10, 22, 250), p);
       craft.current?.position.copy(craftPos);
       craft.current?.lookAt(0, 0, 0);
       cruiseOffset.current = 0;
       heat.current = 0;
       const camPos = craftPos.clone().add(new THREE.Vector3(-15 + p * 3, 5 + p * 2, 24 - p * 4));
-      camera.position.lerp(camPos, 1 - Math.exp(-delta * 3));
+      if (pictureChanged || p < 0.02) camera.position.copy(camPos);
+      else camera.position.lerp(camPos, 1 - Math.exp(-delta * 3));
       look.lerpVectors(craftPos, new THREE.Vector3(0, 0, 0), 0.16 + p * 0.14);
       camera.lookAt(look);
       if (p >= 1 && done.current !== key) { done.current = key; onComplete('APPROACH', run); }
@@ -387,8 +533,14 @@ export function SpaceScene({ stage, focusSite, onFocusSite, run, reducedMotion, 
       <color attach="background" args={['#030304']} />
       <Stars radius={900} depth={300} count={2600} factor={14} saturation={0.05} fade speed={0.15} />
       <ambientLight intensity={0.035} />
-      <directionalLight position={SPACE_SUN.clone().multiplyScalar(500).toArray()} intensity={3.1} color="#fff4e6" />
-      <Planet stage={stage} focusSite={focusSite} onFocusSite={onFocusSite} />
+      <directionalLight position={SPACE_SUN.clone().multiplyScalar(500).toArray()} intensity={3.1} color="#fff6ea" />
+      <directionalLight ref={fill} intensity={0} color="#f3f7ff" />
+      <group ref={marsFrame}>
+        <Planet stage={stage} focusSite={focusSite} onFocusSite={onFocusSite} />
+      </group>
+      <group ref={earthGroup}>
+        <EarthLaunch rocket={rocket} throttle={throttleSignal} sun={sunSignal} />
+      </group>
       <group ref={craft} position={[24, 18, 620]} scale={stage === 'ENTRY' ? 0.09 : 0.7}>
         <Aeroshell heat={heat} cruiseOffset={cruiseOffset} showCruise />
       </group>

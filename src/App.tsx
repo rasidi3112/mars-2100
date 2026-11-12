@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useContext, useEffect, useMemo, useReducer, useState, type CSSProperties } from 'react';
 import type { CameraFocus } from './WorldScene';
 import { bedFor, missionAudio } from './audio/missionAudio';
+import { approachLive, type ApproachSegment } from './scene/approachLive';
 import { CONTRACTS, type ContractId } from './mission/contracts';
 import { INITIAL_LANDING, isCinematic, landingReducer, type LandingStage, type Trajectory } from './mission/landingMachine';
 import { clearShareHash, readShareFromLocation, type ShareCard } from './mission/share';
@@ -114,6 +115,8 @@ function App({ seed }: { seed?: AppTestSeed } = {}) {
   const [steer, setSteer] = useState(0);
   const [shared, setShared] = useState<ShareCard | null>(() => readShareFromLocation());
   const [readyKey, setReadyKey] = useState<string | null>(null);
+  const [approachWatch, setApproachWatch] = useState<{ run: number; segment: ApproachSegment }>({ run: -1, segment: 'earth' });
+  const approachSegment: ApproachSegment = approachWatch.run === landing.run ? approachWatch.segment : 'earth';
   const briefingKey = `${landing.run}:${reducedMotion ? 1 : 0}`;
   const briefingReady = Boolean(seed) || landing.stage !== 'APPROACH' || readyKey === briefingKey;
 
@@ -127,15 +130,24 @@ function App({ seed }: { seed?: AppTestSeed } = {}) {
     window.setTimeout(() => setNotice((current) => (current === message ? '' : current)), 2600);
   }, []);
 
-  // Cold open stays on the approach flight. Skip still leaves the stage immediately.
-  // The timer only records that this approach run has been watched; it does not reset other state.
+  // The approach picture reports its own beat. The briefing waits until Mars is in frame,
+  // with a long fallback so a stalled scene can still be skipped or continued.
+  useEffect(() => {
+    if (landing.stage !== 'APPROACH') return;
+    const timer = window.setInterval(() => {
+      const next = approachLive.segment;
+      setApproachWatch((current) => (current.run === landing.run && current.segment === next ? current : { run: landing.run, segment: next }));
+    }, 80);
+    return () => window.clearInterval(timer);
+  }, [landing.stage, landing.run]);
+
   useEffect(() => {
     if (landing.stage !== 'APPROACH' || seed) return;
     const key = `${landing.run}:${reducedMotion ? 1 : 0}`;
-    const delay = reducedMotion ? 900 : 8000;
+    const delay = approachSegment === 'mars' ? (reducedMotion ? 400 : 2500) : (reducedMotion ? 4000 : 45000);
     const timer = window.setTimeout(() => setReadyKey(key), delay);
     return () => window.clearTimeout(timer);
-  }, [landing.stage, landing.run, reducedMotion, seed]);
+  }, [landing.stage, landing.run, reducedMotion, seed, approachSegment]);
 
   useEffect(() => {
     const audio = missionAudio();
@@ -195,8 +207,8 @@ function App({ seed }: { seed?: AppTestSeed } = {}) {
   useEffect(() => {
     const audio = missionAudio();
     audio.setReduced(reducedMotion);
-    audio.setBed(bedFor(stage, storm));
-  }, [stage, storm, reducedMotion]);
+    audio.setBed(bedFor(stage, storm, approachSegment));
+  }, [stage, storm, reducedMotion, approachSegment]);
   const selectedModule = settlement?.modules.find((module) => module.id === selectedId) ?? null;
 
   useEffect(() => {
@@ -308,7 +320,7 @@ function App({ seed }: { seed?: AppTestSeed } = {}) {
       <MissionTimeline current={timeline} minimal={cinematic} />
 
       {/* ---------- Landing sequence ---------- */}
-      {stage === 'APPROACH' && !briefingReady && <ColdOpen />}
+      {stage === 'APPROACH' && !briefingReady && <ColdOpen segment={approachSegment} />}
       {stage === 'APPROACH' && briefingReady && <ApproachCard contract={landing.contractId} onContract={chooseContract} onContinue={() => dispatchLanding({ type: 'CONTINUE' })} />}
       {(stage === 'APPROACH' || stage === 'SITE_SELECT') && (
         <div className="corner-controls">
