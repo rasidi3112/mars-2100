@@ -1,10 +1,31 @@
 import { useState } from 'react';
 import type { LandingSite } from '../mission/sites';
 import { bestScore, loadRuns, runSiteName, saveRun, type RunRecord } from '../mission/history';
-import { STORM_SOLS, bonusGoals, resilienceScore, shieldingOf, countKind, hasKind, projections, resourceDistanceFactor, type SettlementState } from '../mission/settlement';
+import { SKILL_CARGO, STORM_SOLS, bonusGoals, resilienceScore, shieldingOf, countKind, hasKind, projections, resourceDistanceFactor, type SettlementState } from '../mission/settlement';
+import { paintShareCard, shareUrl, type ShareCard } from '../mission/share';
 import { EvidenceTag } from './LandingHUD';
 import { useT, type Translator } from '../i18n';
 import { failureText, goalText, moduleList } from '../i18n/format';
+
+async function copyText(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const area = document.createElement('textarea');
+      area.value = text;
+      area.setAttribute('readonly', '');
+      document.body.appendChild(area);
+      area.select();
+      const ok = document.execCommand('copy');
+      area.remove();
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
 
 function EnergyChart({ state }: { state: SettlementState }) {
   const tr = useT();
@@ -41,8 +62,10 @@ export function decisionsFor(tr: Translator, state: SettlementState, site: Landi
   const arrays = countKind(state, 'solar');
   const protection = [hasKind(state, 'shield') ? tr.t('report.protection.berm') : null, state.cache ? tr.t('report.protection.cache') : null].filter(Boolean).join(tr.t('report.protection.joiner'));
   return [
+    { id: 'contract', label: tr.t('report.row.contract'), choice: tr.t(`report.contract.${state.contractId}`), result: tr.t(`report.contract.result.${state.contractId}`) },
     { id: 'site', label: tr.t('report.row.site'), choice: site.name, result: tr.t('report.site.result', { hazard: tr.t(`report.site.hazard.${site.id}`), percent: Math.round(site.solarFactor * 100), water: site.iceAccess >= 1 ? tr.t('report.site.waterStrong') : tr.t('report.site.waterWeak') }) },
     { id: 'descent', label: tr.t('report.row.descent'), choice: state.trajectory === 'direct' ? tr.t('report.descent.direct') : tr.t('report.descent.divert'), result: state.trajectory === 'direct' ? (state.landingDamage ? tr.t('report.descent.directDamage', { damage: state.landingDamage, factor: resourceDistanceFactor('direct') }) : tr.t('report.descent.directSafe', { factor: resourceDistanceFactor('direct') })) : tr.t('report.descent.divertResult', { factor: resourceDistanceFactor('divert') }) },
+    { id: 'skill', label: tr.t('report.row.skill'), choice: tr.t(`report.skill.${state.skillGrade}`), result: state.skillGrade === 'rough' || state.skillGrade === 'hard' ? tr.t(state.skillGrade === 'rough' ? 'report.skill.resultRough' : 'report.skill.resultHard', { damage: state.skillDamage, cargo: SKILL_CARGO[state.skillGrade] }) : tr.t(state.skillGrade === 'clear' ? 'report.skill.resultClear' : 'report.skill.resultNeutral') },
     { id: 'habitat', label: tr.t('report.row.habitat'), choice: state.habitatPad === 'outcrop' ? tr.t('report.habitat.outcrop') : tr.t('report.habitat.plain'), result: state.habitatPad === 'outcrop' ? tr.t('report.habitat.outcropResult') : tr.t('report.habitat.plainResult') },
     { id: 'water', label: tr.t('report.row.water'), choice: hasKind(state, 'drill') ? tr.t('report.water.drill') : tr.t('report.water.recycler'), result: first ? tr.t('report.water.change', { from: Math.round(first.water), to: Math.round(last.water) }) : tr.t('report.water.level', { to: Math.round(last.water) }) },
     { id: 'power', label: tr.t('report.row.power'), choice: tr.p('report.power.arrays', arrays) + (hasKind(state, 'battery') ? tr.t('report.power.battery') : '') + (hasKind(state, 'fission') ? tr.t('report.power.fission') : ''), result: shedSols ? tr.p('report.power.short', shedSols) + (blackoutSols ? tr.p('report.power.blackouts', blackoutSols) : '') + '.' : tr.t('report.power.ok') },
@@ -71,6 +94,57 @@ export function MissionReport({ state, site, onClose, onSources, onReplay, onRes
   });
   const personalBest = outcome !== 'evacuated' && !history.isFirst && (history.previousBest === null || score > history.previousBest);
   const sol = String(state.sol).padStart(2, '0');
+  const [copied, setCopied] = useState<'summary' | 'link' | ''>('');
+  const [copyNote, setCopyNote] = useState('');
+  const outcomeLabel = outcome === 'evacuated' ? tr.t('report.runs.failed') : outcome === 'operational' ? tr.t('report.outcome.operational') : tr.t('report.outcome.degraded');
+  const card: ShareCard = {
+    v: 1, site: site.id, trajectory: state.trajectory, outcome, score, goalsMet, contract: state.contractId, skill: state.skillGrade, sol: state.sol,
+  };
+  const summary = tr.t('share.summary', {
+    site: site.name,
+    trajectory: state.trajectory === 'direct' ? tr.t('report.descent.direct') : tr.t('report.descent.divert'),
+    outcome: outcomeLabel,
+    score,
+    contract: tr.t(`report.contract.${state.contractId}`),
+  });
+  const markCopied = (kind: 'summary' | 'link') => {
+    setCopied(kind);
+    window.setTimeout(() => setCopied((current) => (current === kind ? '' : current)), 2200);
+  };
+  const afterCopy = (ok: boolean, kind: 'summary' | 'link') => {
+    if (!ok) { setCopied(''); setCopyNote(tr.t('report.shareFail')); return; }
+    setCopyNote('');
+    markCopied(kind);
+  };
+  const copySummary = () => { void copyText(summary).then((ok) => afterCopy(ok, 'summary')); };
+  const copyLink = () => { void copyText(shareUrl(card)).then((ok) => afterCopy(ok, 'link')); };
+  const saveCard = () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1200;
+    canvas.height = 630;
+    const painted = paintShareCard(canvas, {
+      dir: document.documentElement.dir === 'rtl' ? 'rtl' : 'ltr',
+      kicker: tr.t('share.kicker'),
+      title: 'MARS 2100',
+      rows: [
+        { label: tr.t('report.runs.site'), value: site.name, ltr: true },
+        { label: tr.t('report.runs.outcome'), value: outcomeLabel },
+        { label: tr.t('report.runs.score'), value: tr.n(score), ltr: true },
+        { label: tr.t('report.runs.goals'), value: tr.t('share.goals', { met: goalsMet, total: goals.length }) },
+      ],
+      footer: tr.t('share.cardFooter'),
+    });
+    if (!painted) return;
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'mars-2100-card.png';
+      link.click();
+      URL.revokeObjectURL(url);
+    });
+  };
   return (
     <div className="modal-scrim report-scrim">
       <section className="mission-report" role="dialog" aria-label={tr.t('report.aria')}>
@@ -129,9 +203,13 @@ export function MissionReport({ state, site, onClose, onSources, onReplay, onRes
         <div className="report-footer">
           <span><EvidenceTag tag="GAMEPLAY" /> {tr.t('report.footer')} <EvidenceTag tag="OBSERVED" /> {tr.t('report.footerObserved')}</span>
           <div>
-            <button className="report-source-button u" onClick={onSources}>{tr.t('report.science')}</button>
-            <button className="report-source-button u" onClick={onReplay}>{tr.t('report.replay')}</button>
-            <button className="primary-action report-restart" onClick={onRestart}><span className="u">{tr.t('report.newMission')}</span><b>↻</b></button>
+            <button className="report-source-button u" type="button" onClick={copySummary}>{copied === 'summary' ? tr.t('report.shareCopied') : tr.t('report.shareCopy')}</button>
+            <button className="report-source-button u" type="button" onClick={copyLink}>{copied === 'link' ? tr.t('report.shareLinkCopied') : tr.t('report.shareLink')}</button>
+            <button className="report-source-button u" type="button" onClick={saveCard}>{tr.t('report.shareCard')}</button>
+            {copyNote && <span className="extras-hint">{copyNote}</span>}
+            <button className="report-source-button u" type="button" onClick={onSources}>{tr.t('report.science')}</button>
+            <button className="report-source-button u" type="button" onClick={onReplay}>{tr.t('report.replay')}</button>
+            <button className="primary-action report-restart" type="button" onClick={onRestart}><span className="u">{tr.t('report.newMission')}</span><b>↻</b></button>
           </div>
         </div>
         <button className="report-close" onClick={onClose} aria-label={tr.t('report.closeAria')}>×</button>

@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { SITES, siteById, type Evidence, type FactRow, type LandingSite, type SiteId } from '../mission/sites';
 import { edlLive } from '../mission/edl';
+import type { ContractId } from '../mission/contracts';
 import type { LandingState, Trajectory } from '../mission/landingMachine';
-import { landingDamageFor, resourceDistanceFactor } from '../mission/settlement';
+import { SKILL_CARGO, SKILL_DAMAGE, landingDamageFor, resourceDistanceFactor } from '../mission/settlement';
 import { useT, type Translator } from '../i18n';
 import { edlEventText, evidenceLabel, evidenceLetter, siteFact, siteText } from '../i18n/format';
+import { ContractPicker } from './ContractPicker';
+import { SoundToggle } from './SoundToggle';
 
 export function EvidenceTag({ tag }: { tag: Evidence }) {
   const tr = useT();
@@ -21,13 +24,14 @@ const TagLetter = ({ tr, tag }: { tr: Translator; tag: Evidence }) => (
   <span className={'tag-letter is-' + tag.toLowerCase()} title={tr.upper(evidenceLabel(tr, tag))}>{evidenceLetter(tr, tag)}</span>
 );
 
-export function ApproachCard({ onContinue }: { onContinue: () => void }) {
+export function ApproachCard({ contract, onContract, onContinue }: { contract: ContractId; onContract: (id: ContractId) => void; onContinue: () => void }) {
   const tr = useT();
   return (
     <section className="mission-brief hud-sheet" aria-label={tr.t('approach.aria')}>
       <div className="mission-marker u"><b>01</b> {tr.t('approach.phase')} <i>/</i> {tr.t('approach.mission')}</div>
       <p className="sheet-label u">{tr.t('approach.label')}</p>
       <h2 className="sheet-objective">{tr.t('approach.objective')}</h2>
+      <ContractPicker value={contract} onChange={onContract} />
       <dl className="readout-list">
         <div><dt>{tr.t('approach.vehicle')}</dt><dd>{tr.t('approach.vehicleValue')}</dd></div>
         <div><dt>{tr.t('approach.next')}</dt><dd>{tr.t('approach.nextValue')}</dd></div>
@@ -44,7 +48,7 @@ const ROWS: FactRow[] = ['hazards', 'elevation', 'resources', 'energy', 'confide
 
 export const SITE_LETTER: Record<SiteId, string> = { jezero: 'A', utopia: 'B', elysium: 'C' };
 
-export function SiteSelectPanel({ focus, onFocus, onConfirm }: { focus: SiteId; onFocus: (id: SiteId) => void; onConfirm: (id: SiteId) => void }) {
+export function SiteSelectPanel({ focus, contract, onContract, onFocus, onConfirm }: { focus: SiteId; contract: ContractId; onContract: (id: ContractId) => void; onFocus: (id: SiteId) => void; onConfirm: (id: SiteId) => void }) {
   const tr = useT();
   const site = siteById(focus);
   return (
@@ -52,6 +56,7 @@ export function SiteSelectPanel({ focus, onFocus, onConfirm }: { focus: SiteId; 
       <div className="mission-marker u"><b>01</b> {tr.t('approach.phase')} <i>/</i> {tr.t('site.marker')}</div>
       <h2 className="eval-question">{tr.t('site.question')}</h2>
       <p className="site-why">{tr.t('site.why')}</p>
+      <ContractPicker value={contract} onChange={onContract} />
 
       <div className="eval-focus" aria-live="polite">
         <span className="eval-coords">{SITE_LETTER[site.id]} · {site.coords} · {siteText(tr, site, 'region')}</span>
@@ -174,7 +179,10 @@ export function CinematicHUD({ landing, onSkip, onChoose }: { landing: LandingSt
       </div>
       <LiveTelemetry />
       <div className="edl-disclaimer"><span className="u">{tr.t('edl.disclaimerLead')}</span> · {tr.t('edl.disclaimer')}</div>
-      <button className="skip-button u" onClick={onSkip}>{landing.trajectory ? tr.t('edl.skipLanding') : tr.t('edl.skipToDecision')} <span>⏭</span></button>
+      <div className="corner-controls">
+        <SoundToggle />
+        <button className="skip-button u" type="button" onClick={onSkip}>{landing.trajectory ? tr.t('edl.skipLanding') : tr.t('edl.skipToDecision')} <span>⏭</span></button>
+      </div>
       {landing.stage === 'DESCENT' && !landing.trajectory && flags.awaiting && <TrajectoryDecision site={site} onChoose={onChoose} />}
       {landing.stage === 'DESCENT' && landing.trajectory && <div className="edl-choice-chip u">{landing.trajectory === 'divert' ? tr.t('edl.chip.divert') : tr.t('edl.chip.direct')}</div>}
       {confirmed && <LandingConfirmed />}
@@ -218,6 +226,8 @@ export function PostLandingCard({ landing, onBegin }: { landing: LandingState; o
   const site = siteById(landing.siteId);
   const trajectory = landing.trajectory ?? 'divert';
   const damage = landingDamageFor(site, trajectory);
+  const skill = landing.skillGrade;
+  const steered = !landing.replay && (skill === 'rough' || skill === 'hard');
   const tilt = trajectory === 'direct' && site.hazard === 3;
   const water = site.facts.resources.tag;
   return (
@@ -227,7 +237,10 @@ export function PostLandingCard({ landing, onBegin }: { landing: LandingState; o
       <dl className="readout-list">
         <div><dt>{tr.t('post.lander')}</dt><dd>{tilt ? tr.t('post.landerTilt') : tr.t('post.landerLevel')}</dd></div>
         <div><dt>{tr.t('post.touchdown')}</dt><dd>{trajectory === 'direct' ? tr.t('post.touchdownDirect') : tr.t('post.touchdownDivert')}</dd></div>
-        <div><dt>{tr.t('post.habitat')}</dt><dd className={damage ? 'is-warn' : ''}>{damage ? tr.t('post.habitatDamage', { damage }) : tr.t('post.habitatIntact')}</dd></div>
+        <div><dt>{tr.t('post.habitat')}</dt><dd className={damage || steered ? 'is-warn' : ''}>{damage ? tr.t('post.habitatDamage', { damage }) : steered ? tr.t('post.habitatSkill', { damage: SKILL_DAMAGE[skill] }) : tr.t('post.habitatIntact')}</dd></div>
+        {skill !== 'pending' && (
+          <div><dt>{tr.t('post.skill')}</dt><dd>{landing.replay ? tr.t('post.skillReplay') : skill === 'rough' || skill === 'hard' ? tr.t(skill === 'rough' ? 'post.skill.rough' : 'post.skill.hard', { damage: SKILL_DAMAGE[skill], cargo: SKILL_CARGO[skill] }) : tr.t(skill === 'clear' ? 'post.skill.clear' : 'post.skill.neutral')}</dd></div>
+        )}
         <div><dt>{tr.t('post.sunlight')}</dt><dd>{tr.t('post.sunlightValue', { percent: site.sunlightPercent })} <TagLetter tr={tr} tag="MODELLED" /></dd></div>
         <div><dt>{tr.t('post.water')}</dt><dd>{siteFact(tr, site, 'resources', 'short')} <TagLetter tr={tr} tag={water} /></dd></div>
         <div><dt>{tr.t('post.pressure')}</dt><dd>{tr.t('post.pressureValue')} <TagLetter tr={tr} tag="OBSERVED" /></dd></div>

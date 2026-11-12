@@ -914,3 +914,35 @@ ul.phase-learn { display: grid; gap: 8px; margin: 8px 0 0; padding: 10px 0 0; li
   :root:not(:lang(en)) .crew-chip { padding: 0 3px; }
   :root:not(:lang(en)) .reading-toggle span { padding: 0 4px; letter-spacing: .02em; }
 }
+
+/* Attention pass: cold open, contracts, steering, share card, louder storm. */
+.cold-open { pointer-events: none; position: absolute; z-index: 4; left: 28px; bottom: 16%; max-width: min(560px, calc(100% - 48px)); }
+.cold-open p { margin: 0; color: rgba(248, 241, 230, .78); font: 400 .95rem/1.45 var(--sans, Inter, sans-serif); }
+.cold-open .u { color: #f0c38e; font: 500 max(.62rem, var(--min-text)) var(--mono); letter-spacing: .16em; }
+.cold-open h2 { margin: 8px 0 10px; color: #f8f1e6; font: 500 clamp(2.1rem, 5vw, 3.6rem)/1.02 var(--display); letter-spacing: -.03em; }
+.mission-brief { max-height: min(78vh, 640px); overflow-y: auto; }
+.contract-picker { margin-top: 12px; }
+.contract-options { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.contract-options > span { margin-right: 4px; color: rgba(237, 221, 199, .55); font: 500 max(.5rem, var(--min-text)) var(--mono); letter-spacing: .12em; }
+.contract-options button { min-height: 30px; padding: 4px 10px; border: 1px solid rgba(242, 226, 207, .28); color: rgba(248, 241, 230, .8); background: rgba(20, 16, 14, .35); font: 500 max(.55rem, var(--min-text)) var(--mono); letter-spacing: .08em; cursor: pointer; }
+.contract-options button.is-on { border-color: #f0c38e; color: #211716; background: #f0c38e; }
+.contract-blurb, .contract-suggest { margin: 8px 0 0; color: rgba(236, 224, 208, .72); font-size: .72rem; line-height: 1.45; }
+.contract-suggest { color: #f0c38e; letter-spacing: .06em; }
+.skill-pad { position: absolute; z-index: 6; top: 50%; right: 28px; width: min(380px, calc(100% - 32px)); padding: 16px 16px 12px; transform: translateY(-50%); }
+.skill-pad h2 { margin: 6px 0 4px; color: #f7f0e6; font: 500 1.15rem/1.25 var(--display); }
+.skill-pad > p { margin: 0 0 10px; color: rgba(239, 226, 210, .72); font-size: .72rem; line-height: 1.45; }
+.skill-track { position: relative; height: 54px; margin: 8px 0; background: rgba(255, 255, 255, .06); touch-action: none; cursor: pointer; }
+.skill-band { position: absolute; top: 0; bottom: 0; background: rgba(168, 214, 165, .32); }
+.skill-marker { position: absolute; top: 8px; bottom: 8px; width: 12px; background: #f0c38e; }
+.skill-time { height: 3px; background: rgba(255, 255, 255, .08); }
+.skill-time span { display: block; height: 100%; background: #f0c38e; transform-origin: left center; }
+.share-view { position: relative; width: min(520px, calc(100% - 28px)); max-height: min(86vh, 720px); overflow: auto; padding: 22px 22px 18px; border: 1px solid rgba(240, 195, 142, .4); background: rgba(18, 14, 12, .94); }
+.share-view h2 { margin: 8px 0; color: #f8f1e6; font: 500 1.6rem/1.2 var(--display); }
+.share-line { margin: 0 0 8px; color: #f0c38e; font: 500 .95rem var(--mono); }
+.is-storm .storm-wash { background: linear-gradient(100deg, rgba(120, 72, 48, .28), rgba(196, 140, 96, .38)); }
+.report-footer > div { flex-wrap: wrap; }
+@media (max-width: 800px) {
+  .cold-open { left: 12px; right: 12px; bottom: 12%; max-width: none; }
+  .skill-pad { top: auto; right: 10px; left: 10px; bottom: 108px; width: auto; transform: none; }
+  .cold-open h2 { font-size: 2rem; }
+}
