@@ -109,3 +109,5 @@ Sources:
 ## License
 
 The code is released under the [MIT License](LICENSE). The Mars globe and site textures in `public/textures/mars/` are derived from public-domain NASA and USGS data, and the Earth textures in `public/textures/earth/` come from NASA's public-domain Blue Marble (see Sources above).
+
+Developed by [rasidi3112](https://github.com/rasidi3112).
