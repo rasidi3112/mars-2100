@@ -14,6 +14,8 @@ import { LandingDust } from './scene/LandingDust';
 import { StormDust } from './scene/StormDust';
 import { Astronauts, Building, PowerCables } from './scene/Outpost';
 import type { Translator } from './i18n';
+import { uiScaleFor } from './hud/uiScale';
+import { captureMode } from './scene/approachLive';
 
 export type { ModuleKind, OutpostModule } from './mission/settlement';
 
@@ -382,6 +384,59 @@ function PanelViewOffset({ active }: { active: boolean }) {
   return null;
 }
 
+// Development only: ?capture stops the render loop and hands the clock to window.captureStep(dt),
+// so a script can render a film frame by frame at a fixed rate, however slow the machine is.
+const CAPTURE = captureMode;
+
+function CaptureClock() {
+  const advance = useThree((state) => state.advance);
+  useEffect(() => {
+    let time = 0;
+    const target = window as unknown as { captureStep?: (dt: number) => number };
+    target.captureStep = (dt: number) => { time += dt; advance(time); return time; };
+    return () => { delete target.captureStep; };
+  }, [advance]);
+  return null;
+}
+
+// Keeps the picture smooth on any device: the render resolution steps down when frames get slow
+// (older phones, integrated graphics) and back up when there is headroom. The ceiling is lower on
+// small screens, where extra pixels cost battery and are hard to see.
+function AdaptiveResolution() {
+  const setDpr = useThree((state) => state.setDpr);
+  const state = useRef({ frames: 0, time: 0, scale: 1, steady: 0 });
+  const size = useThree((three) => three.size);
+  const ceiling = useMemo(() => {
+    const small = window.matchMedia('(max-width: 800px), (max-height: 500px)').matches;
+    // A scaled interface (see uiScale) draws the canvas smaller or larger on screen than its layout
+    // size; the resolution follows, so one canvas pixel still lands on about one screen pixel.
+    const scale = uiScaleFor(window.innerWidth, window.innerHeight);
+    return Math.min(window.devicePixelRatio || 1, CAPTURE ? 2 : small ? 1.5 : 1.75) * scale;
+    // Recomputed when the canvas is resized or the device is turned.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [size.width, size.height]);
+  // Development only: ?fullres keeps the full resolution, for screenshots on slow machines.
+  const pinned = useMemo(() => CAPTURE || (Boolean(import.meta.env?.DEV) && new URLSearchParams(window.location.search).has('fullres')), []);
+  useEffect(() => { setDpr(ceiling); }, [ceiling, setDpr]);
+  useFrame((_, delta) => {
+    const s = state.current;
+    if (pinned || delta > 0.5) return; // a hidden tab or a long stall is not a measurement
+    s.frames += 1;
+    s.time += delta;
+    if (s.time < 1.5) return;
+    const fps = s.frames / s.time;
+    s.frames = 0;
+    s.time = 0;
+    const floor = Math.min(ceiling, 0.7);
+    let next = s.scale;
+    if (fps < 26) { next = Math.max(floor / ceiling, s.scale * 0.82); s.steady = 0; }
+    else if (fps > 52) { s.steady += 1; if (s.steady >= 3) { next = Math.min(1, s.scale * 1.12); s.steady = 0; } }
+    else s.steady = 0;
+    if (Math.abs(next - s.scale) > 0.01) { s.scale = next; setDpr(ceiling * next); }
+  });
+  return null;
+}
+
 function SceneContents(props: WorldSceneProps) {
   const { landing, focusSite } = props;
   const site = siteById(landing.siteId ?? focusSite);
@@ -394,6 +449,8 @@ function SceneContents(props: WorldSceneProps) {
       )}
       {terrain && (landing.stage === 'ENTRY' || !space) && <SurfaceStage props={props} terrain={terrain} active={!space} />}
       <PanelViewOffset active={landing.stage === 'POST_LANDING' || landing.stage === 'SETTLEMENT'} />
+      <AdaptiveResolution />
+      {CAPTURE && <CaptureClock />}
     </>
   );
 }
@@ -407,7 +464,11 @@ export function WorldScene(props: WorldSceneProps) {
   return (
     <Canvas
       shadows
+      frameloop={CAPTURE ? 'never' : 'always'}
       dpr={[1, 1.75]}
+      // Measure the layout size, not the on-screen size: the interface may be CSS-scaled (uiScale),
+      // and pointer positions are reported in layout pixels.
+      resize={{ offsetSize: true }}
       camera={{ position: [24, 18, 640], fov: 42, near: 0.3, far: 9000 }}
       gl={{ antialias: true, alpha: false, powerPreference: 'high-performance' }}
       fallback={<div className="scene-startup">{props.tr.t('app.sceneUnavailable')}</div>}
