@@ -7,7 +7,7 @@ import { edlLive, entrySample } from '../mission/edl';
 import { STAGE_SECONDS, type LandingStage } from '../mission/landingMachine';
 import { Aeroshell } from './Vehicles';
 import { patchAround } from './sitePatches';
-import { SUN_DIRECTION, approachDurations, approachLive } from './approachLive';
+import { SUN_DIRECTION, approachDurations, approachLive, filmStart, launchHold } from './approachLive';
 import { EarthLaunch, alignEarth } from './EarthLaunch';
 import { LaunchSite } from './LaunchSite';
 
@@ -336,7 +336,8 @@ export function SpaceScene({ stage, focusSite, onFocusSite, run, reducedMotion, 
   const cruiseOffset = useRef(0);
   const earthAligned = useRef(false);
   const picture = useRef('');
-  const fill = useRef<THREE.DirectionalLight>(null);
+  const sunLight = useRef<THREE.DirectionalLight>(null);
+  const waited = useRef(0);
 
   useLayoutEffect(() => {
     const departing = stage === 'APPROACH';
@@ -354,10 +355,15 @@ export function SpaceScene({ stage, focusSite, onFocusSite, run, reducedMotion, 
     const key = stage + ':' + run;
     if (stageKey.current !== key) {
       stageKey.current = key;
-      time.current = 0;
+      time.current = stage === 'APPROACH' && filmStart !== null ? filmStart : 0;
+      waited.current = 0;
       if (stage === 'APPROACH') approachLive.segment = 'earth';
     }
-    time.current += Math.min(delta, 0.05);
+    // The film waits a moment for the launch-coast imagery, so it does not open on a blank ground.
+    const waiting = stage === 'APPROACH' && time.current === 0 && !approachLive.mapsReady && waited.current < 4;
+    if (waiting) waited.current += delta;
+    // The film may drop to 10 frames a second before it starts to run slow.
+    else if (!(stage === 'APPROACH' && launchHold !== null)) time.current += Math.min(delta, stage === 'APPROACH' ? 0.1 : 0.05);
     const t = time.current;
     const ease = (x: number) => x * x * (3 - 2 * x);
 
@@ -369,7 +375,7 @@ export function SpaceScene({ stage, focusSite, onFocusSite, run, reducedMotion, 
       }
       if (earthGroup.current) earthGroup.current.visible = false;
       if (stars.current) stars.current.visible = true;
-      if (fill.current) fill.current.intensity = 0;
+      if (sunLight.current) sunLight.current.intensity = 3.1;
     }
 
     if (stage === 'APPROACH') {
@@ -379,10 +385,8 @@ export function SpaceScene({ stage, focusSite, onFocusSite, run, reducedMotion, 
       const pictureChanged = picture.current !== segment;
       picture.current = segment;
       approachLive.segment = segment;
-      if (fill.current) {
-        fill.current.intensity = segment === 'earth' ? 0.55 : 0;
-        if (segment === 'earth') fill.current.position.copy(camera.position);
-      }
+      // The launch scene brings its own sun, with shadows.
+      if (sunLight.current) sunLight.current.intensity = segment === 'earth' ? 0 : 3.1;
       if (earthGroup.current && !earthAligned.current) {
         alignEarth(earthGroup.current);
         earthAligned.current = true;
@@ -494,8 +498,7 @@ export function SpaceScene({ stage, focusSite, onFocusSite, run, reducedMotion, 
         <Stars radius={900} depth={300} count={2600} factor={14} saturation={0.05} fade speed={0.15} />
       </group>
       <ambientLight intensity={0.035} />
-      <directionalLight position={SPACE_SUN.clone().multiplyScalar(500).toArray()} intensity={3.1} color="#fff6ea" />
-      <directionalLight ref={fill} intensity={0} color="#f3f7ff" />
+      <directionalLight ref={sunLight} position={SPACE_SUN.clone().multiplyScalar(500).toArray()} intensity={3.1} color="#fff6ea" />
       <group ref={marsFrame}>
         <Planet stage={stage} focusSite={focusSite} onFocusSite={onFocusSite} />
       </group>
