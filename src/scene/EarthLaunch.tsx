@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { useFrame, useThree } from '@react-three/fiber';
+import { useEffect, useMemo, useRef } from 'react';
+import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { NOISE_GLSL } from './glsl';
 import { EARTH_RADIUS, LAUNCH_LAT, LAUNCH_LON, SUN_DIRECTION } from './approachLive';
+import { useGlobeMaps, useSmallScreen } from './earthData';
 
 // Same mapping as SpaceScene.latLonToVector. Duplicated so this file does not
 // import the scene that imports it.
@@ -14,13 +15,12 @@ function latLonToVector(lat: number, lon: number, radius: number) {
   return new THREE.Vector3(-radius * Math.cos(phi) * Math.sin(theta), radius * Math.cos(theta), radius * Math.sin(phi) * Math.sin(theta));
 }
 
-// Earth colour is NASA's public-domain Blue Marble (land, ocean, ice), with the
-// same equirectangular layout as the Mars globe: 180°W at the left edge.
-// A painted stand-in shows until that image loads, or if it cannot.
-// Lighting, ocean glint, haze and clouds are drawn in shaders: a visual model, not measured data.
-// This globe is the Earth seen from space during the transit. The launch itself is in LaunchSite.
-
-const EARTH_BASE = `${import.meta.env?.BASE_URL ?? '/'}textures/earth/`;
+// The Earth seen from space during the transit, from NASA imagery (see earthData.ts):
+// Blue Marble for the day side, Black Marble city lights for the night side, and the cloud
+// cover of one real day seen by the VIIRS instrument. All three use the same equirectangular
+// layout as the Mars globe: 180°W at the left edge. Flat colours stand in until they load.
+// Lighting, ocean glint and haze are drawn in shaders: a visual model, not measured data.
+// The launch itself is in LaunchSite.
 
 const SITE = latLonToVector(LAUNCH_LAT, LAUNCH_LON, 1).normalize();
 const ALIGN_Q = new THREE.Quaternion().setFromUnitVectors(SITE, new THREE.Vector3(0, 1, 0.08).normalize());
@@ -49,7 +49,10 @@ const earthVertex = /* glsl */ `
 
 const earthFragment = /* glsl */ `
   uniform sampler2D uMap;
+  uniform sampler2D uNight;
+  uniform sampler2D uClouds;
   uniform vec3 uSun;
+  uniform vec3 uSunO;
   uniform float uRadius;
   uniform float uScale;
   uniform int uOctaves;
@@ -68,7 +71,7 @@ const earthFragment = /* glsl */ `
     float blueness = albedo.b - max(albedo.r, albedo.g);
     float ocean = smoothstep(0.008, 0.05, blueness) * (1.0 - smoothstep(0.18, 0.34, albedo.g));
 
-    // Fine detail that only shows close up, so the map does not look soft at launch height.
+    // Fine detail that only shows close up, so the map does not look soft near the globe.
     vec3 p = vPosO / uRadius;
     float dist = length(cameraPosition - vPosW) / max(uScale, 0.0001);
     float near = 1.0 - smoothstep(uRadius * 0.25, uRadius * 1.1, dist);
@@ -86,7 +89,13 @@ const earthFragment = /* glsl */ `
     vec3 sunColour = vec3(1.0, 0.95, 0.88) * 2.4;
     // A warm band where the sun is low.
     vec3 lowSun = mix(vec3(1.0, 0.72, 0.55), vec3(1.0), smoothstep(0.0, 0.25, ndl));
-    vec3 colour = albedo * diffuse * sunColour * lowSun;
+    // Cloud shadows: the cloud map, shifted a little toward the sun.
+    vec3 po = normalize(vPosO);
+    vec3 toSun = normalize(uSunO - po * dot(uSunO, po));
+    vec3 ps = normalize(po + toSun * 0.012);
+    vec2 uvShadow = vec2(atan(ps.z, -ps.x) / 6.2831853, 0.5 + asin(clamp(ps.y, -1.0, 1.0)) / 3.14159265);
+    float shadow = 1.0 - 0.45 * texture2D(uClouds, uvShadow).r;
+    vec3 colour = albedo * 1.55 * diffuse * sunColour * lowSun * shadow;
 
     // Sun glint on water.
     vec3 H = normalize(L + V);
@@ -101,8 +110,10 @@ const earthFragment = /* glsl */ `
     float skyLit = smoothstep(-0.2, 0.45, ndl);
     colour = mix(colour, sky * skyLit * 1.25 * lowSun, clamp(limb * 0.75 + 0.06 * skyLit, 0.0, 0.85));
 
-    // Faint night side so the dark hemisphere is not pure black.
-    colour += albedo * 0.012;
+    // Night side: city lights from Black Marble, and a faint glow so it is not pure black.
+    vec3 lights = texture2D(uNight, vUv).rgb;
+    float city = smoothstep(0.12, 0.6, max(lights.r, lights.g));
+    colour += (vec3(1.0, 0.78, 0.48) * city * 1.6 + lights * 0.05 + albedo * 0.01) * (1.0 - day);
 
     gl_FragColor = vec4(colour, 1.0);
     #include <tonemapping_fragment>
@@ -113,12 +124,11 @@ const earthFragment = /* glsl */ `
 // ---------- clouds ----------
 
 const cloudFragment = /* glsl */ `
+  uniform sampler2D uClouds;
   uniform vec3 uSun;
   uniform vec3 uSite;
-  uniform float uTime;
   uniform float uRadius;
   uniform float uScale;
-  uniform int uOctaves;
   varying vec2 vUv;
   varying vec3 vNormalW;
   varying vec3 vPosW;
@@ -126,28 +136,22 @@ const cloudFragment = /* glsl */ `
   ${NOISE_GLSL}
   void main() {
     vec3 p = normalize(vPosO);
-    vec3 drift = vec3(uTime * 0.006, 0.0, uTime * 0.002);
-    float warp = fbm(p * 3.0 + drift, uOctaves);
-    float n = fbm(p * 7.5 + warp * 2.2 + drift * 1.5, uOctaves + 1);
-    n = n * 0.8 + fbm(p * 22.0 + warp, 3) * 0.2;
-    // Fewer clouds over the dry subtropics, more near the equator and mid-latitudes.
-    float lat = abs(p.y);
-    float threshold = 0.5 + 0.07 * smoothstep(0.22, 0.42, lat) * (1.0 - smoothstep(0.5, 0.62, lat));
+    float cover = texture2D(uClouds, vUv).r;
+    // Break up the map's pixels when the camera is close.
     float dist = length(cameraPosition - vPosW) / max(uScale, 0.0001);
     float near = 1.0 - smoothstep(uRadius * 0.25, uRadius * 1.1, dist);
-    n += (vnoise(p * 90.0) - 0.5) * 0.12 * near;
-    float cover = smoothstep(threshold, threshold + 0.16, n);
-    // Keep the sky over the pad clear so the launch is visible.
-    cover *= 1.0 - smoothstep(0.9935, 0.9995, dot(p, normalize(uSite)));
+    cover = clamp(cover + (vnoise(p * 180.0) - 0.5) * 0.3 * near * smoothstep(0.05, 0.5, cover), 0.0, 1.0);
+    cover = smoothstep(0.08, 0.72, cover);
+    // Keep the sky over the pad clear, as it was at launch.
+    cover *= 1.0 - smoothstep(0.9975, 0.9997, dot(p, normalize(uSite)));
 
     vec3 N = normalize(vNormalW);
     vec3 L = normalize(uSun);
     float ndl = dot(N, L);
     float lit = smoothstep(-0.1, 0.5, ndl);
     vec3 lowSun = mix(vec3(1.0, 0.8, 0.68), vec3(1.0), smoothstep(0.0, 0.25, ndl));
-    vec3 colour = vec3(1.0) * (0.03 + lit * 1.9) * lowSun;
-    float alpha = cover * 0.82;
-    gl_FragColor = vec4(colour, alpha);
+    vec3 colour = vec3(1.0) * (0.02 + lit * (1.5 + 0.5 * cover)) * lowSun;
+    gl_FragColor = vec4(colour, cover * 0.94);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
   }
@@ -183,90 +187,10 @@ const earthAtmosphereFragment = /* glsl */ `
   }
 `;
 
-// ---------- textures ----------
-
-function createEarthPaint() {
-  const width = 1024;
-  const height = 512;
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return null;
-  const toX = (lon: number) => ((lon + 180) / 360) * width;
-  const toY = (lat: number) => ((90 - lat) / 180) * height;
-  ctx.fillStyle = '#0d2c55';
-  ctx.fillRect(0, 0, width, height);
-  const blob = (lon: number, lat: number, rx: number, ry: number, color: string) => {
-    for (const offset of [-360, 0, 360]) {
-      const x = toX(lon + offset);
-      const y = toY(lat);
-      const sx = (rx / 360) * width;
-      const sy = (ry / 180) * height;
-      ctx.save();
-      ctx.translate(x, y);
-      ctx.scale(1, sy / Math.max(0.001, sx));
-      const fill = ctx.createRadialGradient(0, 0, 0, 0, 0, sx);
-      fill.addColorStop(0, color);
-      fill.addColorStop(1, 'rgba(0,0,0,0)');
-      ctx.fillStyle = fill;
-      ctx.beginPath();
-      ctx.arc(0, 0, sx, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    }
-  };
-  const land = 'rgba(86, 110, 58, 0.92)';
-  const dry = 'rgba(170, 138, 84, 0.9)';
-  [
-    [-100, 45, 28, 18], [-90, 15, 16, 14], [-62, -10, 14, 22],
-    [20, 8, 18, 22], [25, -22, 12, 14], [45, 25, 14, 10],
-    [80, 45, 36, 18], [100, 35, 22, 14], [110, 60, 24, 12],
-    [135, -25, 14, 10],
-  ].forEach(([lon, lat, rx, ry]) => blob(lon, lat, rx, ry, land));
-  [[20, 22, 16, 10], [45, 25, 12, 8], [70, 28, 14, 8]].forEach(([lon, lat, rx, ry]) => blob(lon, lat, rx, ry, dry));
-  ctx.fillStyle = 'rgba(236, 240, 244, 0.95)';
-  ctx.fillRect(0, 0, width, toY(78));
-  ctx.fillRect(0, toY(-78), width, height - toY(-78));
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.anisotropy = 8;
-  return texture;
-}
-
-function useSmallScreen() {
-  const gl = useThree((state) => state.gl);
-  return useMemo(() => gl.capabilities.maxTextureSize < 2048 || window.matchMedia('(max-width: 800px), (max-height: 500px)').matches, [gl]);
-}
-
-function useEarthMap() {
-  const gl = useThree((state) => state.gl);
-  const small = useSmallScreen();
-  const painted = useMemo(() => createEarthPaint(), []);
-  const [map, setMap] = useState<THREE.Texture | null>(null);
-  useEffect(() => () => { painted?.dispose(); }, [painted]);
-  useEffect(() => {
-    let cancelled = false;
-    const loader = new THREE.TextureLoader();
-    loader.loadAsync(`${EARTH_BASE}earth-color-${small ? '1k' : '2k'}.jpg`)
-      .then((texture) => {
-        if (cancelled) { texture.dispose(); return; }
-        texture.colorSpace = THREE.SRGBColorSpace;
-        texture.anisotropy = Math.min(16, gl.capabilities.getMaxAnisotropy());
-        texture.generateMipmaps = true;
-        texture.minFilter = THREE.LinearMipmapLinearFilter;
-        setMap(texture);
-      })
-      .catch(() => { /* painted stand-in remains */ });
-    return () => { cancelled = true; };
-  }, [gl, small]);
-  useEffect(() => () => { map?.dispose(); }, [map]);
-  return map ?? painted;
-}
-
 export function EarthLaunch() {
-  const color = useEarthMap();
+  const { maps } = useGlobeMaps();
   const small = useSmallScreen();
+  const group = useRef<THREE.Group>(null);
   const earthMesh = useRef<THREE.Mesh>(null);
   const octaves = small ? 4 : 5;
   const earthMaterial = useMemo(() => new THREE.ShaderMaterial({
@@ -274,7 +198,10 @@ export function EarthLaunch() {
     fragmentShader: earthFragment,
     uniforms: {
       uMap: { value: null as THREE.Texture | null },
+      uNight: { value: null as THREE.Texture | null },
+      uClouds: { value: null as THREE.Texture | null },
       uSun: { value: SUN_DIRECTION.clone() },
+      uSunO: { value: SUN_DIRECTION.clone() },
       uRadius: { value: EARTH_RADIUS },
       uScale: { value: 1 },
       uOctaves: { value: octaves },
@@ -286,14 +213,13 @@ export function EarthLaunch() {
     transparent: true,
     depthWrite: false,
     uniforms: {
+      uClouds: { value: null as THREE.Texture | null },
       uSun: { value: SUN_DIRECTION.clone() },
       uSite: { value: SITE.clone() },
-      uTime: { value: 0 },
       uRadius: { value: EARTH_RADIUS },
       uScale: { value: 1 },
-      uOctaves: { value: octaves },
     },
-  }), [octaves]);
+  }), []);
   const atmosphere = useMemo(() => new THREE.ShaderMaterial({
     vertexShader: earthAtmosphereVertex,
     fragmentShader: earthAtmosphereFragment,
@@ -307,24 +233,32 @@ export function EarthLaunch() {
       uMax: { value: Math.sqrt(1 - 1 / (1.03 * 1.03)) },
     },
   }), []);
-  useEffect(() => { earthMaterial.uniforms.uMap.value = color; }, [earthMaterial, color]);
+  useEffect(() => {
+    earthMaterial.uniforms.uMap.value = maps.day;
+    earthMaterial.uniforms.uNight.value = maps.night;
+    earthMaterial.uniforms.uClouds.value = maps.clouds;
+    cloudMaterial.uniforms.uClouds.value = maps.clouds;
+  }, [earthMaterial, cloudMaterial, maps]);
   useEffect(() => () => { atmosphere.dispose(); earthMaterial.dispose(); cloudMaterial.dispose(); }, [atmosphere, earthMaterial, cloudMaterial]);
   const scaleVec = useMemo(() => new THREE.Vector3(), []);
-  useFrame(({ clock }) => {
-    cloudMaterial.uniforms.uTime.value = clock.getElapsedTime();
+  const inverse = useMemo(() => new THREE.Quaternion(), []);
+  useFrame(() => {
     // The group is scaled down during the transit; the close-up detail should follow.
     if (earthMesh.current) {
       earthMesh.current.getWorldScale(scaleVec);
       earthMaterial.uniforms.uScale.value = scaleVec.x;
       cloudMaterial.uniforms.uScale.value = scaleVec.x;
+      // Sun direction in the globe's own frame, for the cloud shadows.
+      earthMesh.current.getWorldQuaternion(inverse).invert();
+      (earthMaterial.uniforms.uSunO.value as THREE.Vector3).copy(SUN_DIRECTION).applyQuaternion(inverse);
     }
   });
   return (
-    <group>
+    <group ref={group}>
       <mesh ref={earthMesh} material={earthMaterial}>
         <sphereGeometry args={[EARTH_RADIUS, 256, 160]} />
       </mesh>
-      <mesh scale={1.011} material={cloudMaterial}>
+      <mesh scale={1.008} material={cloudMaterial}>
         <sphereGeometry args={[EARTH_RADIUS, 128, 80]} />
       </mesh>
       <mesh scale={1.03} material={atmosphere}>
