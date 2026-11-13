@@ -27,7 +27,7 @@ const only = args.filter((arg) => !arg.startsWith('--'));
 const FIXED_NAMES = [
   'MARS 2100', 'NASA', 'JPL', 'Jezero', 'Utopia Planitia', 'Elysium Planitia', 'Perseverance', 'Curiosity',
   'InSight', 'Phoenix', 'Opportunity', 'MOXIE', 'RAD', 'SHARAD', 'MOLA', 'HiRISE', 'MRO', 'KRUSTY', 'Kilopower',
-  'ISS', 'ECLSS', 'Viking 2', 'Veggie',
+  'ISS', 'ECLSS', 'Viking 2', 'Veggie', 'Artemis', 'SLS', 'Landsat', 'Blue Marble', 'Black Marble', 'VIIRS', 'Launch Complex 39B', 'White Room',
 ];
 // Chinese and Japanese do not put spaces between words, so a leading/trailing space in an
 // English fragment (e.g. ' + battery') is not expected there.

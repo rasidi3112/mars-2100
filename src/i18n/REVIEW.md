@@ -4,28 +4,28 @@
 speaker ("perlu tinjauan penutur asli").** None has been checked by a human yet, so none may be
 described as verified. Locked terms and rules: [`glossary.md`](./glossary.md).
 
-Source of truth: `locales/en.ts` (829 keys). The key count includes plural variants
+Source of truth: `locales/en.ts` (931 keys). The key count includes plural variants
 (`.one` / `.other`) that some languages do not use but must still provide.
 
 ## Status per language
 
 | Language | File | Keys | Automated checks | Native review | Reviewer / date |
 |---|---|---|---|---|---|
-| English (source) | `en.ts` | 829 | — | source text | — |
-| Bahasa Indonesia | `id.ts` | 829 / 829 | ✓ | **needs native review** | — |
-| Español | `es.ts` | 829 / 829 | ✓ | **needs native review** | — |
-| 简体中文 | `zh-Hans.ts` | 829 / 829 | ✓ | **needs native review** | — |
-| العربية | `ar.ts` | 853 (829 + Arabic plural forms) | ✓ | **needs native review** | — |
-| Français | `fr.ts` | 829 / 829 | ✓ | **needs native review** | — |
-| 日本語 | `ja.ts` | 829 / 829 | ✓ | **needs native review** | — |
-| 한국어 | `ko.ts` | 829 / 829 | ✓ | **needs native review** | — |
-| Deutsch | `de.ts` | 829 / 829 | ✓ | **needs native review** | — |
-| Português (Brasil) | `pt-BR.ts` | 829 / 829 | ✓ | **needs native review** | — |
-| Русский | `ru.ts` | 841 (829 + Russian plural forms) | ✓ | **needs native review** | — |
-| हिन्दी | `hi.ts` | 829 / 829 | ✓ | **needs native review** | — |
-| Türkçe | `tr.ts` | 829 / 829 | ✓ | **needs native review** | — |
-| Italiano | `it.ts` | 829 / 829 | ✓ | **needs native review** | — |
-| Tiếng Việt | `vi.ts` | 829 / 829 | ✓ | **needs native review** | — |
+| English (source) | `en.ts` | 931 | — | source text | — |
+| Bahasa Indonesia | `id.ts` | 931 / 931 | ✓ | **needs native review** | — |
+| Español | `es.ts` | 931 / 931 | ✓ | **needs native review** | — |
+| 简体中文 | `zh-Hans.ts` | 931 / 931 | ✓ | **needs native review** | — |
+| العربية | `ar.ts` | 955 (931 + Arabic plural forms) | ✓ | **needs native review** | — |
+| Français | `fr.ts` | 931 / 931 | ✓ | **needs native review** | — |
+| 日本語 | `ja.ts` | 931 / 931 | ✓ | **needs native review** | — |
+| 한국어 | `ko.ts` | 931 / 931 | ✓ | **needs native review** | — |
+| Deutsch | `de.ts` | 931 / 931 | ✓ | **needs native review** | — |
+| Português (Brasil) | `pt-BR.ts` | 931 / 931 | ✓ | **needs native review** | — |
+| Русский | `ru.ts` | 943 (931 + Russian plural forms) | ✓ | **needs native review** | — |
+| हिन्दी | `hi.ts` | 931 / 931 | ✓ | **needs native review** | — |
+| Türkçe | `tr.ts` | 931 / 931 | ✓ | **needs native review** | — |
+| Italiano | `it.ts` | 931 / 931 | ✓ | **needs native review** | — |
+| Tiếng Việt | `vi.ts` | 931 / 931 | ✓ | **needs native review** | — |
 
 ✓ = `npm run i18n:check` passes: keys complete, `{placeholders}` identical, every number in the English text present
 (value unchanged, local separators allowed), fixed names kept in Latin script, leading/trailing
@@ -37,6 +37,10 @@ The full mission (approach → site → entry → trajectory decision → touchd
 solar flare → report, plus a failed run) was played through the real interface in en, id, ar, zh-Hans,
 de and hi at 1280×800 and 375×812, including a language switch mid-mission and in the report.
 Layout was tested in Chromium only — not in Safari, Firefox or on real phones.
+
+The Earth-launch texts added later (the 24 `launch.*` keys, and the rewritten `earthlaunch.line.detailed`,
+`approach.departureNote.*` and `sources.transit.text`) pass `npm run i18n:check` in every language, but
+only a few of them were looked at in the browser (in English, Indonesian and Arabic). They need the same native review.
 
 Automated checks show the text is *structurally* safe (nothing missing, every number and name kept).
 They cannot show that a sentence is natural or scientifically well phrased — that needs a person.

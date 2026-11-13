@@ -17,7 +17,9 @@ English (`src/i18n/locales/en.ts`) is the source of truth.
    Write the language's usual spacing (e.g. French "28 %"), never a different unit.
 3. **Fixed names stay in Latin script, untranslated:** MARS 2100, NASA, JPL, Jezero Crater,
    Utopia Planitia, Elysium Planitia, Perseverance, Curiosity, InSight, Phoenix, Opportunity,
-   Viking 2, MOXIE, RAD, SHARAD, MOLA, HiRISE, MRO, KRUSTY, Kilopower, ISS, ECLSS, Veggie.
+   Viking 2, MOXIE, RAD, SHARAD, MOLA, HiRISE, MRO, KRUSTY, Kilopower, ISS, ECLSS, Veggie,
+   Artemis II, SLS, Landsat, Blue Marble, Black Marble, VIIRS, Launch Complex 39B, White Room
+   (add the translation in brackets after "White Room" the first time, e.g. "White Room (ruang putih)").
    (Decision 2026-10: site names stay Latin in every language, including Arabic,
    Chinese, Japanese, Korean, Hindi and Russian.) A generic word next to a name may be
    translated ("the crater floor of Jezero").

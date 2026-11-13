@@ -49,9 +49,12 @@ const ENTRIES: Entry[] = [
   {
     id: 'transit', tag: 'MODELLED',
     links: [
+      { label: 'NASA GIBS · Global Imagery Browse Services', url: 'https://nasa-gibs.github.io/gibs-api-docs/' },
       { label: 'NASA Visible Earth · Blue Marble', url: 'https://visibleearth.nasa.gov/collection/1484/blue-marble' },
+      { label: 'NASA · Artemis II press kit (countdown and ascent)', url: 'https://www.nasa.gov/wp-content/uploads/2026/01/artemis-ii-press-kit.pdf' },
+      { label: 'NASA · Artemis II launch day updates', url: 'https://www.nasa.gov/blogs/missions/2026/04/01/live-artemis-ii-launch-day-updates/' },
+      { label: 'NASA · Space Launch System reference guide', url: 'https://www.nasa.gov/wp-content/uploads/2022/03/sls-reference-guide-2022-v2-508-0.pdf' },
       { label: 'NASA GSFC · Earth fact sheet', url: 'https://nssdc.gsfc.nasa.gov/planetary/factsheet/earthfact.html' },
-      { label: 'NASA · Artemis', url: 'https://www.nasa.gov/humans-in-space/artemis/' },
     ],
   },
   {
