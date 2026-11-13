@@ -5,7 +5,8 @@ import * as THREE from 'three';
 // Conceptual vehicles. The entry–descent–landing architecture is heat shield →
 // supersonic parachute → backshell separation → powered descent → touchdown on legs,
 // the sequence flown by NASA's Phoenix (2008) and InSight (2018) landers. The crewed
-// cargo lander itself is invented for this simulator.
+// cargo lander itself is invented for this simulator. The same capsule and service module
+// sit on top of the rocket at launch (see LaunchVehicle).
 
 export type Signal = { current: number };
 
@@ -39,15 +40,60 @@ function Backshell() {
   );
 }
 
+// Service module ("cruise stage"): propulsion, power and consumables for the trip. It sits against
+// the heat shield, as on Apollo and Orion, so the capsule rides apex-up on the rocket and the crew
+// boards through the side hatch. It is cast off before atmospheric entry.
+const moduleWhite = new THREE.MeshStandardMaterial({ color: '#d9d5cc', roughness: 0.5, metalness: 0.25 });
+const moduleDark = new THREE.MeshStandardMaterial({ color: '#2a2f36', roughness: 0.45, metalness: 0.5 });
+const moduleFoil = new THREE.MeshStandardMaterial({ color: '#b08a4a', roughness: 0.35, metalness: 0.8 });
+const solarCell = new THREE.MeshStandardMaterial({ color: '#14233a', roughness: 0.25, metalness: 0.7, side: THREE.DoubleSide });
+const WING_ANGLES = [Math.PI / 4, (3 * Math.PI) / 4, (5 * Math.PI) / 4, (7 * Math.PI) / 4];
+
+function ServiceModule({ arrays }: { arrays: boolean }) {
+  return (
+    <group>
+      <mesh position={[0, 0, 2.55]} rotation={[Math.PI / 2, 0, 0]} material={moduleWhite} castShadow>
+        <cylinderGeometry args={[2.55, 2.55, 3.7, 40]} />
+      </mesh>
+      {/* Radiator band and aft closeout. */}
+      <mesh position={[0, 0, 2.2]} rotation={[Math.PI / 2, 0, 0]} material={moduleDark}>
+        <cylinderGeometry args={[2.58, 2.58, 1.5, 40, 1, true]} />
+      </mesh>
+      <mesh position={[0, 0, 4.45]} rotation={[Math.PI / 2, 0, 0]} material={moduleFoil}>
+        <cylinderGeometry args={[1.7, 2.5, 0.3, 32]} />
+      </mesh>
+      <mesh position={[0, 0, 5.1]} rotation={[-Math.PI / 2, 0, 0]} material={moduleDark}>
+        <cylinderGeometry args={[0.42, 0.98, 1.1, 24, 1, true]} />
+      </mesh>
+      {arrays && WING_ANGLES.map((angle) => (
+        <group key={angle} rotation={[0, 0, angle]}>
+          <mesh position={[3.1, 0, 3.5]} rotation={[0, 0, Math.PI / 2]} material={moduleWhite}>
+            <cylinderGeometry args={[0.06, 0.06, 1.2, 6]} />
+          </mesh>
+          {/* Wings are canted, as when they track the Sun, so they do not vanish edge-on. */}
+          {[0, 1, 2].map((panel) => (
+            <mesh key={panel} position={[4.85 + panel * 2.3, 0, 3.5]} rotation={[0.95, 0, 0]} material={solarCell}>
+              <boxGeometry args={[2.2, 1.9, 0.04]} />
+            </mesh>
+          ))}
+        </group>
+      ))}
+    </group>
+  );
+}
+
 // Aeroshell in a "+z is forward" frame (use lookAt to aim it along the flight path).
-export function Aeroshell({ heat, cruiseOffset, showCruise }: { heat: Signal; cruiseOffset: Signal; showCruise: boolean }) {
+// `arrays` is false while the solar wings are still folded under the launch fairing.
+export function Aeroshell({ heat, cruiseOffset, showCruise, arrays = true }: { heat: Signal; cruiseOffset: Signal; showCruise: boolean; arrays?: boolean }) {
   const cruise = useRef<THREE.Group>(null);
   const sheath = useRef<THREE.Mesh>(null);
   useFrame(({ clock }) => {
     if (cruise.current) {
-      cruise.current.position.z = -3.2 - cruiseOffset.current * 26;
-      cruise.current.rotation.z = cruiseOffset.current * 0.8;
-      cruise.current.visible = showCruise && cruiseOffset.current < 0.99;
+      // Cast off before entry: it drifts ahead and aside, out of the capsule's path.
+      const k = cruiseOffset.current;
+      cruise.current.position.set(k * 9, -k * 5, k * 24);
+      cruise.current.rotation.set(k * 0.5, k * 0.3, k * 0.8);
+      cruise.current.visible = showCruise && k < 0.99;
     }
     const flicker = 0.92 + Math.sin(clock.getElapsedTime() * 37) * 0.05 + Math.sin(clock.getElapsedTime() * 13) * 0.03;
     if (sheath.current) (sheath.current.material as THREE.MeshBasicMaterial).opacity = heat.current * 0.3 * flicker;
@@ -56,15 +102,8 @@ export function Aeroshell({ heat, cruiseOffset, showCruise }: { heat: Signal; cr
     <group>
       <HeatShieldMesh heat={heat} />
       <Backshell />
-      <group ref={cruise} position={[0, 0, -3.2]}>
-        <mesh rotation={[Math.PI / 2, 0, 0]}>
-          <cylinderGeometry args={[2.5, 2.5, 0.45, 32]} />
-          <meshStandardMaterial color="#c9c4bb" roughness={0.5} metalness={0.4} />
-        </mesh>
-        <mesh position={[0, 0, -0.24]}>
-          <ringGeometry args={[1.0, 2.45, 32]} />
-          <meshStandardMaterial color="#1d2c3c" roughness={0.3} metalness={0.6} side={THREE.DoubleSide} />
-        </mesh>
+      <group ref={cruise}>
+        <ServiceModule arrays={arrays} />
       </group>
       {/* Plasma sheath: thin and faint — Mars' atmosphere is ~1% as dense as Earth's at the surface. */}
       <mesh ref={sheath} position={[0, 0, 0.3]} rotation={[Math.PI / 2, 0, 0]}>
