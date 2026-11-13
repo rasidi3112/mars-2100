@@ -3,7 +3,7 @@
 
 const STORAGE_KEY = 'mars2100.audio.v1';
 
-export type AudioBed = 'launch' | 'transit' | 'approach' | 'entry' | 'descent' | 'surface' | 'storm' | 'silent';
+export type AudioBed = 'pad' | 'launch' | 'transit' | 'approach' | 'entry' | 'descent' | 'surface' | 'storm' | 'silent';
 export type AudioCue = 'plasma' | 'chute' | 'engine' | 'thump';
 
 function readMuted() {
@@ -119,9 +119,13 @@ class MissionAudio {
     this.bedGain.gain.cancelScheduledValues(time);
     this.bedGain.gain.setValueAtTime(0, time);
     if (this.bed === 'silent') return;
-    const level = this.bed === 'storm' ? 0.22 : this.bed === 'launch' ? 0.16 : this.bed === 'entry' ? 0.16 : 0.11;
+    const level = this.bed === 'storm' ? 0.22 : this.bed === 'launch' ? 0.16 : this.bed === 'entry' ? 0.16 : this.bed === 'pad' ? 0.07 : 0.11;
     this.bedGain.gain.linearRampToValueAtTime(level, time + (this.reduced ? 0.2 : 1.1));
-    if (this.bed === 'launch') {
+    if (this.bed === 'pad') {
+      // Before the engines start: only the sea wind across the tower.
+      this.bedNoise(520, 0.5);
+      this.osc(196, 'sine', 0.05);
+    } else if (this.bed === 'launch') {
       this.osc(46, 'sawtooth', 0.4);
       this.osc(58, 'sine', 0.28);
       this.bedNoise(220, this.reduced ? 0.25 : 0.65);
@@ -219,9 +223,9 @@ export function missionAudio() {
   return singleton;
 }
 
-export function bedFor(stage: string, storm: boolean, segment: 'earth' | 'transit' | 'mars' = 'mars'): AudioBed {
+export function bedFor(stage: string, storm: boolean, segment: 'earth' | 'transit' | 'mars' = 'mars', quietPad = false): AudioBed {
   if (storm && stage === 'SETTLEMENT') return 'storm';
-  if (stage === 'APPROACH') return segment === 'earth' ? 'launch' : segment === 'transit' ? 'transit' : 'approach';
+  if (stage === 'APPROACH') return segment === 'earth' ? (quietPad ? 'pad' : 'launch') : segment === 'transit' ? 'transit' : 'approach';
   if (stage === 'SITE_SELECT') return 'approach';
   if (stage === 'ENTRY') return 'entry';
   if (stage === 'DESCENT' || stage === 'TOUCHDOWN') return 'descent';

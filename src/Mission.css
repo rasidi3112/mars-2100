@@ -947,3 +947,21 @@ ul.phase-learn { display: grid; gap: 8px; margin: 8px 0 0; padding: 10px 0 0; li
   .skill-pad { top: auto; right: 10px; left: 10px; bottom: 108px; width: auto; transform: none; }
   .cold-open h2 { font-size: 2rem; }
 }
+
+/* Launch film: the story line sits above the launch clock, and the orbit hints stay out of the way. */
+.is-film .mission-footer { display: none; }
+.cold-open.is-launch { bottom: 142px; }
+.cold-open.is-launch h2 { margin: 6px 0 8px; font-size: clamp(1.7rem, 4vw, 2.9rem); }
+.cold-open.is-launch p:not(.u) { max-width: 46ch; font-size: .88rem; }
+.cold-open h2, .cold-open p:not(.u) { animation: fade-in .45s ease both; }
+.launch-telemetry { grid-template-columns: repeat(4, auto); bottom: 44px; }
+.launch-disclaimer { bottom: 12px; }
+@media (max-width: 800px) {
+  .cold-open.is-launch { bottom: 150px; }
+  .cold-open.is-launch h2 { font-size: 1.6rem; }
+  .cold-open.is-launch p:not(.u) { font-size: .8rem; }
+  .launch-telemetry { grid-template-columns: repeat(3, 1fr); bottom: 46px; }
+  .launch-telemetry .edl-event { grid-column: 1 / -1; }
+}
+/* Short or very large windows: the same layout, drawn smaller or larger (see hud/uiScale.ts). */
+.mars-app.is-scaled { width: calc(100vw / var(--ui-scale)); height: calc(100dvh / var(--ui-scale)); min-height: 0; transform: scale(var(--ui-scale)); transform-origin: 0 0; }

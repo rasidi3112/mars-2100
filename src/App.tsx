@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useContext, useEffect, useMemo, useReducer, useState, type CSSProperties } from 'react';
 import type { CameraFocus } from './WorldScene';
 import { bedFor, missionAudio } from './audio/missionAudio';
-import { approachLive, type ApproachSegment } from './scene/approachLive';
+import { approachLive, captureMode, type ApproachSegment } from './scene/approachLive';
 import { CONTRACTS, type ContractId } from './mission/contracts';
 import { INITIAL_LANDING, isCinematic, landingReducer, type LandingStage, type Trajectory } from './mission/landingMachine';
 import { clearShareHash, readShareFromLocation, type ShareCard } from './mission/share';
@@ -14,13 +14,15 @@ import { hasLandingCopy, timelineIndex } from './mission/phases';
 import { LanguagePicker } from './hud/LanguagePicker';
 import { MissionTimeline } from './hud/MissionTimeline';
 import { ApproachCard, CinematicHUD, EvidenceTag, LandingConfirmed, PostLandingCard, SiteSelectPanel } from './hud/LandingHUD';
-import { ColdOpen } from './hud/ColdOpen';
+import { ColdOpen, LaunchTelemetry } from './hud/ColdOpen';
+import { launchLive, type LaunchBeat } from './mission/launch';
 import { ShareView } from './hud/ShareView';
 import { SoundToggle } from './hud/SoundToggle';
 import { SteerPad } from './hud/SteerPad';
 import { PhasePanel } from './hud/PhasePanel';
 import { MissionReport } from './hud/MissionReport';
 import { SourcesPanel } from './hud/SourcesPanel';
+import { useUiScale } from './hud/uiScale';
 import { GLOSSARY_IDS, ReadingContext, useReadingPreference } from './hud/reading';
 import { I18nContext, createTranslator, useT } from './i18n';
 import { moduleDescription, moduleName, noteText, warningText } from './i18n/format';
@@ -99,6 +101,7 @@ export interface AppTestSeed {
 
 function App({ seed }: { seed?: AppTestSeed } = {}) {
   const reducedMotion = usePrefersReducedMotion();
+  const uiScale = useUiScale();
   const [reading, toggleReading] = useReadingPreference();
   const i18n = useContext(I18nContext);
   // App provides the reading level below, so it builds its own translator from state.
@@ -115,8 +118,9 @@ function App({ seed }: { seed?: AppTestSeed } = {}) {
   const [steer, setSteer] = useState(0);
   const [shared, setShared] = useState<ShareCard | null>(() => readShareFromLocation());
   const [readyKey, setReadyKey] = useState<string | null>(null);
-  const [approachWatch, setApproachWatch] = useState<{ run: number; segment: ApproachSegment }>({ run: -1, segment: 'earth' });
+  const [approachWatch, setApproachWatch] = useState<{ run: number; segment: ApproachSegment; beat: LaunchBeat }>({ run: -1, segment: 'earth', beat: 'boarding' });
   const approachSegment: ApproachSegment = approachWatch.run === landing.run ? approachWatch.segment : 'earth';
+  const launchBeat: LaunchBeat = approachWatch.run === landing.run ? approachWatch.beat : 'boarding';
   const briefingKey = `${landing.run}:${reducedMotion ? 1 : 0}`;
   const briefingReady = Boolean(seed) || landing.stage !== 'APPROACH' || readyKey === briefingKey;
 
@@ -136,15 +140,16 @@ function App({ seed }: { seed?: AppTestSeed } = {}) {
     if (landing.stage !== 'APPROACH') return;
     const timer = window.setInterval(() => {
       const next = approachLive.segment;
-      setApproachWatch((current) => (current.run === landing.run && current.segment === next ? current : { run: landing.run, segment: next }));
+      const beat = launchLive.beat;
+      setApproachWatch((current) => (current.run === landing.run && current.segment === next && current.beat === beat ? current : { run: landing.run, segment: next, beat }));
     }, 80);
     return () => window.clearInterval(timer);
   }, [landing.stage, landing.run]);
 
   useEffect(() => {
-    if (landing.stage !== 'APPROACH' || seed) return;
+    if (landing.stage !== 'APPROACH' || seed || captureMode) return;
     const key = `${landing.run}:${reducedMotion ? 1 : 0}`;
-    const delay = approachSegment === 'mars' ? (reducedMotion ? 400 : 2500) : (reducedMotion ? 4000 : 45000);
+    const delay = approachSegment === 'mars' ? (reducedMotion ? 400 : 2500) : (reducedMotion ? 8000 : 150000);
     const timer = window.setTimeout(() => setReadyKey(key), delay);
     return () => window.clearTimeout(timer);
   }, [landing.stage, landing.run, reducedMotion, seed, approachSegment]);
@@ -207,8 +212,8 @@ function App({ seed }: { seed?: AppTestSeed } = {}) {
   useEffect(() => {
     const audio = missionAudio();
     audio.setReduced(reducedMotion);
-    audio.setBed(bedFor(stage, storm, approachSegment));
-  }, [stage, storm, reducedMotion, approachSegment]);
+    audio.setBed(bedFor(stage, storm, approachSegment, launchBeat === 'boarding' || launchBeat === 'armRetract'));
+  }, [stage, storm, reducedMotion, approachSegment, launchBeat]);
   const selectedModule = settlement?.modules.find((module) => module.id === selectedId) ?? null;
 
   useEffect(() => {
@@ -272,7 +277,7 @@ function App({ seed }: { seed?: AppTestSeed } = {}) {
 
   return (
     <ReadingContext.Provider value={reading}>
-    <main className={'mars-app stage-' + stage.toLowerCase() + (storm ? ' is-storm' : '')}>
+    <main className={'mars-app stage-' + stage.toLowerCase() + (storm ? ' is-storm' : '') + (stage === 'APPROACH' && !briefingReady ? ' is-film' : '') + (uiScale !== 1 ? ' is-scaled' : '')} style={uiScale !== 1 ? ({ '--ui-scale': uiScale } as CSSProperties) : undefined}>
       <div className="world-layer">
         <Suspense fallback={<div className="scene-startup u"><span />{tr.t('app.loading')}</div>}>
           <WorldScene
@@ -320,7 +325,8 @@ function App({ seed }: { seed?: AppTestSeed } = {}) {
       <MissionTimeline current={timeline} minimal={cinematic} />
 
       {/* ---------- Landing sequence ---------- */}
-      {stage === 'APPROACH' && !briefingReady && <ColdOpen segment={approachSegment} />}
+      {stage === 'APPROACH' && !briefingReady && <ColdOpen segment={approachSegment} beat={launchBeat} />}
+      {stage === 'APPROACH' && !briefingReady && approachSegment === 'earth' && <LaunchTelemetry />}
       {stage === 'APPROACH' && briefingReady && <ApproachCard contract={landing.contractId} onContract={chooseContract} onContinue={() => dispatchLanding({ type: 'CONTINUE' })} />}
       {(stage === 'APPROACH' || stage === 'SITE_SELECT') && (
         <div className="corner-controls">
